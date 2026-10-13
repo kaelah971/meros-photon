@@ -1,65 +1,54 @@
-# Meros
+<div align="center">
 
-Memory-native customer support.
+# MEROS
 
-> Solve it once. Remember it for everyone.
+**Solve it once. Remember it for everyone.**
 
-# **Tools I Used to Connect Meros with Walrus Memory**
+Memory-native customer support — turning confirmed resolutions into reusable organizational memory, while keeping customer context private.
 
-**Walrus Memory SDK:** MemWal SDK (`@mysten-incubation/memwal`)
+[![OPEN MEROS](https://img.shields.io/badge/OPEN_MEROS-Live_App-00E599?style=for-the-badge&logo=vercel&logoColor=white)](https://usemeros.vercel.app)
+[![WATCH DEMO](https://img.shields.io/badge/WATCH_DEMO-YouTube-FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://youtu.be/9kmpZT66M4k?si=e17SXph7HeJx7L5x)
+[![READ THE STORY](https://img.shields.io/badge/READ_THE_STORY-Medium-000000?style=for-the-badge&logo=medium&logoColor=white)](https://medium.com/@kaelah679/how-meros-turns-support-conversations-into-shared-memory-20fa5ae4e4b1)
 
-**Connection Method:** `MemWal.create(...)`
+![Walrus Mainnet](https://img.shields.io/badge/Walrus-Mainnet-00C853?style=flat-square)
+![38 Mainnet Memories](https://img.shields.io/badge/Mainnet_Memories-38-00C853?style=flat-square)
+![MemWal SDK](https://img.shields.io/badge/MemWal-SDK-4D7CFE?style=flat-square)
+![Gemini](https://img.shields.io/badge/Gemini-Powered-4285F4?style=flat-square)
+![Neon](https://img.shields.io/badge/Neon-Postgres-00E599?style=flat-square)
+![Better Auth](https://img.shields.io/badge/Better_Auth-Sessions-111111?style=flat-square)
+![Next.js](https://img.shields.io/badge/Next.js-15-000000?style=flat-square&logo=next.js&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-Strict-3178C6?style=flat-square&logo=typescript&logoColor=white)
 
-**Durable Memory Writes:** `rememberAndWait(...)`
+[Live App](https://usemeros.vercel.app) · [Demo Video](https://youtu.be/9kmpZT66M4k?si=e17SXph7HeJx7L5x) · [Medium Article](https://medium.com/@kaelah679/how-meros-turns-support-conversations-into-shared-memory-20fa5ae4e4b1) · [Walrus Proof](#walrus-memory-proof) · [Architecture](#architecture) · [Demo Flow](#demo-flow-for-judges) · [Running Locally](#running-locally)
 
-**Semantic Memory Recall:** `recall(...)`
-
-**Network:** Walrus Memory Mainnet
-
-**MemWal Delegate Public Key:**  
-`9123dfc8a526eed234961f63f533665679bbda9c7faafa1d201a0dfa7b4084c5`
+</div>
 
 ---
 
-## Project Links
+## Walrus Memory Proof
 
-**Live App:** https://usemeros.vercel.app
+Live on **Walrus Memory Mainnet** — 38 blobs, above the 10-memory minimum. Proven by the Alice → Bob cross-customer shared-memory flow.
 
-**Demo Video:** https://youtu.be/9kmpZT66M4k?si=e17SXph7HeJx7L5x
+| | |
+|---|---|
+| **Network** | Walrus Memory Mainnet |
+| **Integration** | MemWal SDK (`@mysten-incubation/memwal`) |
+| **Connection** | `MemWal.create(...)` |
+| **Durable writes** | `rememberAndWait(...)` |
+| **Semantic recall** | `recall(...)` |
+| **Mainnet memories / blobs** | 38 |
+| **Hackathon required minimum** | 10 |
+| **Demo proof** | Alice → Bob cross-customer shared-memory flow |
 
-**Medium Article:** https://medium.com/@kaelah679/how-meros-turns-support-conversations-into-shared-memory-20fa5ae4e4b1
-
-## Submission Proof
-
-**Walrus Network:** Mainnet
-
-**Walrus Memory Agent ID:**  
+**Walrus Memory Agent ID:**
 `0xb812495947fc6e4276569d60da39da7cc86a3a1b47351abf9a6635987791229a`
 
-**MemWal Delegate Public Key:**  
+**MemWal Delegate Public Key:**
 `9123dfc8a526eed234961f63f533665679bbda9c7faafa1d201a0dfa7b4084c5`
-
-**Walrus Memory Integration:** MemWal SDK (`@mysten-incubation/memwal`)
-
-**Connection Method:** `MemWal.create(...)`
-
-**Durable Writes:** `rememberAndWait(...)`
-
-**Semantic Recall:** `recall(...)`
-
-**Mainnet Memories / Blobs:** 38
-
-**Required Minimum:** 10
-
-**Demo users:** Alice → Bob cross-customer shared-memory flow
 
 ---
 
 Meros remembers each customer privately and turns confirmed, staff-approved resolutions into shared support memory. Returning customers continue with context. New customers with a recurring issue start from the proven fix — without seeing anyone else's history.
-
-Walrus Memory · Gemini · Neon · Better Auth · Next.js
-
----
 
 ## The problem
 

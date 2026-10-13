@@ -69,6 +69,50 @@ Every answer shows which memory influenced it, and any answer can be rerun with 
 
 ---
 
+## Product Screens
+
+Real product UI captured from the live app at desktop viewport. Shots use a fresh demo workspace (removed afterwards); the memory behavior is the same Alice → staff → Bob loop described below.
+
+### Landing — memory-native support
+
+![Meros landing hero](docs/screenshots/meros-landing.png)
+
+Private memory, shared fixes, and product knowledge, orbiting one promise: solve it once, remember it for everyone.
+
+### Workspace console — staff overview
+
+![Meros staff workspace console](docs/screenshots/meros-workspace.png)
+
+Live issue, customer, and conversation counts plus the customer support URL that opens the chat below.
+
+### Customer chat — private-memory experience
+
+![Meros customer support chat](docs/screenshots/meros-private-memory.png)
+
+Signed-in sessions recall private memory across conversations, and each answer discloses exactly which memory it used.
+
+### Fix Card review — shared resolutions
+
+![Meros Fix Card review queue](docs/screenshots/meros-shared-fix.png)
+
+Resolved issues with a grounded, reusable fix appear here for staff approval — nothing becomes shared on its own.
+
+### Product knowledge — organizational memory
+
+![Meros product knowledge view](docs/screenshots/meros-knowledge.png)
+
+Canonical workspace material lives in Neon; Walrus holds only the semantic index.
+
+### Memory, proven — the reusable-memory loop
+
+![Meros reusable memory loop](docs/screenshots/meros-memory-proof.png)
+
+Alice resolves, staff approve, the fix becomes shared memory, and Bob skips the long path — while Alice's private context stays locked.
+
+*Captured with Playwright via `scripts/capture-readme-shots.mjs`; the throwaway demo workspace was deleted afterwards.*
+
+---
+
 ## How it works: Alice → staff → Bob
 
 The core loop, end to end:
@@ -327,11 +371,6 @@ The suite mixes fast pure tests and marked live integration tests (live Neon; Wa
 - **Live app:** https://usemeros.vercel.app
 - **Demo video:** https://youtu.be/9kmpZT66M4k?si=e17SXph7HeJx7L5x
 - **Medium article:** https://medium.com/@kaelah679/how-meros-turns-support-conversations-into-shared-memory-20fa5ae4e4b1
-
-<!-- Screenshots: no image assets are checked into the repo yet.
-     When ready, add to e.g. docs/screenshots/ and link the strongest four:
-     1. landing hero, 2. Fix Card staff review, 3. Bob answer with shared provenance,
-     4. memory-on vs memory-off comparison. -->
 
 ---
 

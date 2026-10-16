@@ -1,8 +1,12 @@
 /**
  * Meros database migration: `npm run db:migrate`.
  *
- * Applies db/schema.sql + db/better-auth-schema.sql additively and
- * idempotently against DATABASE_URL. Statement failures meaning
+ * Applies db/better-auth-schema.sql + db/schema.sql additively and
+ * idempotently against DATABASE_URL. Better Auth tables go FIRST because
+ * schema.sql holds foreign keys to `"user"` (customers.auth_user_id,
+ * organization_members, fix_cards.reviewed_by, photon bindings) that fail
+ * on a fresh database when the auth tables do not exist yet.
+ * Statement failures meaning
  * "already exists" (42P07 / 42710) are tolerated so re-runs are safe;
  * anything else exits nonzero. NEVER drops, truncates, or reseeds —
  * existing production data is left untouched. Creates zero Walrus writes.
@@ -44,7 +48,7 @@ async function main() {
   const { neon } = await import("@neondatabase/serverless");
   const sql = neon(url);
 
-  const files = ["db/schema.sql", "db/better-auth-schema.sql"];
+  const files = ["db/better-auth-schema.sql", "db/schema.sql"];
   let applied = 0;
   let skipped = 0;
   for (const file of files) {

@@ -251,3 +251,55 @@ create table if not exists workspace_knowledge_chunks (
 
 create index if not exists workspace_knowledge_chunks_kb_idx
   on workspace_knowledge_chunks (knowledge_id, position);
+
+-- Meros Photon S1 operator iMessage bindings + message history.
+-- Maps an iMessage sender to ONE authenticated staff user + workspace.
+-- Raw sender handles and pairing codes are NEVER persisted; only hashes.
+-- photon_messages is the durable history + at-least-once dedupe log:
+-- Spectrum retries a delivery with the SAME platform message id, so the
+-- unique (direction, provider_message_id) constraint makes a redelivery
+-- return the existing row instead of triggering a second reply.
+-- (NULL provider ids never conflict, mirroring messages.client_id.)
+-- Idempotent: safe to re-run. Zero Walrus writes.
+
+create table if not exists photon_operator_bindings (
+  id uuid primary key default gen_random_uuid(),
+  workspace_id text not null references workspaces(id) on delete cascade,
+  operator_user_id text not null references "user"(id) on delete cascade,
+  sender_hash text,
+  status text not null default 'pending'
+    check (status in ('pending', 'active', 'revoked')),
+  pairing_code_hash text,
+  pairing_expires_at timestamptz,
+  created_at timestamptz not null default now(),
+  last_seen_at timestamptz,
+  unique (workspace_id, sender_hash)
+);
+
+create index if not exists photon_bindings_sender_idx
+  on photon_operator_bindings (sender_hash, status);
+
+create table if not exists photon_messages (
+  id uuid primary key default gen_random_uuid(),
+  workspace_id text references workspaces(id) on delete cascade,
+  binding_id uuid references photon_operator_bindings(id) on delete set null,
+  direction text not null check (direction in ('inbound', 'outbound')),
+  webhook_id text,
+  provider_message_id text,
+  thread_id text,
+  sender_hash text,
+  body_text text not null default '',
+  status text not null default 'received'
+    check (status in ('received', 'replied', 'rejected', 'sent', 'failed')),
+  reply_to_id uuid references photon_messages(id) on delete set null,
+  created_at timestamptz not null default now(),
+  unique (direction, provider_message_id)
+);
+
+create index if not exists photon_messages_binding_idx
+  on photon_messages (binding_id, created_at desc);
+
+-- One outbound reply per inbound message: second claimants lose the race
+-- and must NOT send. NULL reply_to_ids never conflict with each other.
+create unique index if not exists photon_messages_reply_unique
+  on photon_messages (reply_to_id);

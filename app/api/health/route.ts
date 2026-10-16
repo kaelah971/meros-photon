@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getMemwalServerUrl, isMainnetRelayer, isNeonConfigured } from "@/lib/env";
 import { geminiStatus } from "@/lib/gemini";
 import { isWalrusConfigured } from "@/lib/env";
+import { isPhotonConfigured } from "@/lib/photon/config";
 import { dbAvailable } from "@/lib/db";
 
 /**
@@ -38,5 +39,6 @@ export async function GET() {
       mainnet: isMainnetRelayer(serverUrl),
     },
     auth: { configured: authConfigured },
+    photon: { configured: isPhotonConfigured() },
   });
 }

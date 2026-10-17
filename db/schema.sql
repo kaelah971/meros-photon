@@ -338,3 +338,78 @@ create table if not exists operator_preferences (
   updated_at timestamptz not null default now(),
   primary key (workspace_id, operator_user_id)
 );
+
+-- Meros S4 Incident Center: first-class durable incidents.
+-- incidents own nothing but themselves: customers, conversations, fix
+-- cards, and knowledge rows stay canonical in their own tables and are
+-- linked below (no duplication, workspace checks on every link).
+-- merged_into_incident_id is set ONLY on merged rows; split_from links a
+-- child created by an explicit split action. Additive + idempotent.
+
+create table if not exists incidents (
+  id uuid primary key default gen_random_uuid(),
+  workspace_id text not null references workspaces(id) on delete cascade,
+  title text not null,
+  description text not null default '',
+  severity text not null default 'medium'
+    check (severity in ('low', 'medium', 'high', 'critical')),
+  status text not null default 'detected'
+    check (status in ('detected', 'investigating', 'ready_for_action',
+                       'recovering', 'monitoring', 'resolved',
+                       'dismissed', 'merged', 'split')),
+  resolution_summary text,
+  resolved_at timestamptz,
+  merged_into_incident_id uuid references incidents(id) on delete set null,
+  split_from_incident_id uuid references incidents(id) on delete set null,
+  created_by_user_id text references "user"(id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists incidents_workspace_idx
+  on incidents (workspace_id, status, updated_at desc);
+
+create table if not exists incident_customers (
+  incident_id uuid not null references incidents(id) on delete cascade,
+  customer_id text not null references customers(id) on delete cascade,
+  added_by_user_id text references "user"(id) on delete set null,
+  added_at timestamptz not null default now(),
+  primary key (incident_id, customer_id)
+);
+
+create table if not exists incident_conversations (
+  incident_id uuid not null references incidents(id) on delete cascade,
+  conversation_id uuid not null references conversations(id) on delete cascade,
+  added_by_user_id text references "user"(id) on delete set null,
+  added_at timestamptz not null default now(),
+  primary key (incident_id, conversation_id)
+);
+
+create table if not exists incident_evidence (
+  id uuid primary key default gen_random_uuid(),
+  incident_id uuid not null references incidents(id) on delete cascade,
+  kind text not null check (kind in ('message', 'conversation', 'fix_card', 'knowledge', 'note')),
+  ref_conversation_id uuid references conversations(id) on delete cascade,
+  ref_message_id uuid references messages(id) on delete cascade,
+  ref_fix_card_id uuid references fix_cards(id) on delete set null,
+  ref_knowledge_id uuid references workspace_knowledge(id) on delete cascade,
+  label text not null default '',
+  note text not null default '',
+  created_by_user_id text references "user"(id) on delete set null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists incident_evidence_incident_idx
+  on incident_evidence (incident_id, created_at);
+
+create table if not exists incident_events (
+  id uuid primary key default gen_random_uuid(),
+  incident_id uuid not null references incidents(id) on delete cascade,
+  kind text not null,
+  actor_user_id text references "user"(id) on delete set null,
+  detail jsonb not null default '{}',
+  created_at timestamptz not null default now()
+);
+
+create index if not exists incident_events_incident_idx
+  on incident_events (incident_id, created_at);

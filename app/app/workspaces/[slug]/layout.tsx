@@ -8,6 +8,7 @@ const NAV: ConsoleNavItem[] = [
   { label: "Overview", href: "" },
   { label: "Conversations", href: "/conversations" },
   { label: "Customers", href: "/customers" },
+  { label: "Incidents", href: "/incidents" },
   { label: "Fix Cards", href: "/fix-cards" },
   { label: "Shared memory", href: "/shared" },
   { label: "Knowledge", href: "/knowledge" },

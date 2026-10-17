@@ -115,8 +115,10 @@ function createLocalState(): StateAdapter {
 }
 
 type PhotonChat = Chat<{ imessage: ReturnType<typeof createiMessageAdapter> }>;
+type PhotonAdapter = ReturnType<typeof createiMessageAdapter>;
 
 let cached: PhotonChat | null = null;
+let cachedAdapter: PhotonAdapter | null = null;
 
 function realDeps(): OperatorDeps {
   return {
@@ -124,14 +126,27 @@ function realDeps(): OperatorDeps {
       const { resolveActiveBinding } = await import("./bindings");
       const b = await resolveActiveBinding(senderHash);
       return b
-        ? { id: b.id, workspaceId: b.workspace_id, operatorUserId: b.operator_user_id }
+        ? { id: b.id, workspaceId: b.workspace_id, operatorUserId: b.operator_user_id, threadId: b.thread_id }
         : null;
+    },
+    noteThread: async (bindingId, threadId) => {
+      const { neon } = await import("@neondatabase/serverless");
+      const { dbAvailable } = await import("../db");
+      if (!(await dbAvailable())) throw new Error("database unavailable");
+      const thread = threadId?.trim() || null;
+      if (!thread) return;
+      const sql = neon(process.env.DATABASE_URL!.trim());
+      await sql`update photon_operator_bindings
+        set thread_id = coalesce(${thread}, thread_id), last_seen_at = now()
+        where id = ${bindingId} and status = 'active'`;
     },
     claimPairing: async (code, senderHash) => {
       const { claimPairingCode } = await import("./bindings");
+      // Thread address is recorded separately via noteThread (which carries
+      // the inbound thread id); the claim itself stays sender-scoped.
       const b = await claimPairingCode(code, senderHash);
       return b
-        ? { id: b.id, workspaceId: b.workspace_id, operatorUserId: b.operator_user_id }
+        ? { id: b.id, workspaceId: b.workspace_id, operatorUserId: b.operator_user_id, threadId: b.thread_id }
         : null;
     },
     checkStaff: async (userId, workspaceId) => {
@@ -227,6 +242,7 @@ export function getBot(): PhotonChat {
     projectSecret: getPhotonProjectSecret()!,
     webhookSecret: getPhotonWebhookSecret()!,
   });
+  cachedAdapter = adapter;
   const bot = new Chat({
     userName: "meros",
     adapters: { imessage: adapter },
@@ -239,4 +255,28 @@ export function getBot(): PhotonChat {
   bot.onNewMessage(handleS1Message);
   cached = bot as unknown as PhotonChat;
   return cached;
+}
+
+/**
+ * Server-initiated send to a recorded conversation address (S2 proactive
+ * notifications). Cold-start safe: the adapter rebuilds the thread from the
+ * chat GUID encoded in threadId, so no live Chat state is required beyond
+ * this call. Throws PhotonNotConfiguredError when unconfigured.
+ */
+export async function postToThread(
+  threadId: string,
+  text: string,
+): Promise<{ providerId: string | null }> {
+  const bot = getBot();
+  const adapter =
+    cachedAdapter ??
+    (() => {
+      const registry = (bot as unknown as { adapters?: unknown }).adapters;
+      return (registry instanceof Map ? registry.get("imessage") : null) as PhotonAdapter | null;
+    })();
+  if (!adapter || typeof adapter.postMessage !== "function") {
+    throw new Error("imessage adapter unavailable");
+  }
+  const sent = await adapter.postMessage(threadId, text);
+  return { providerId: (sent?.id ?? null) as string | null };
 }

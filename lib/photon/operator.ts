@@ -16,6 +16,7 @@ export type OperatorBinding = {
   id: string;
   workspaceId: string;
   operatorUserId: string;
+  threadId: string | null;
 };
 
 export type OperatorWorkspace = {
@@ -27,6 +28,11 @@ export type OperatorWorkspace = {
 export type OperatorDeps = {
   findBinding: (senderHash: string) => Promise<OperatorBinding | null>;
   claimPairing: (code: string, senderHash: string) => Promise<OperatorBinding | null>;
+  /**
+   * Record the inbound thread as the binding's durable conversation address
+   * (S2 proactive sends). Best-effort: failures never block the reply.
+   */
+  noteThread: (bindingId: string, threadId: string | null) => Promise<void>;
   checkStaff: (userId: string, workspaceId: string) => Promise<void>;
   readStats: (workspaceId: string) => Promise<StatsSnapshot>;
   findWorkspaceBySlug: (slug: string) => Promise<OperatorWorkspace | null>;
@@ -226,6 +232,11 @@ export async function handleOperatorMessage(
     const replyText =
       `Meros: paired — this sender is now linked to ` +
       `${ws ? ws.name : "your workspace"}. Send \`stats\` to read live workspace state.`;
+    try {
+      await deps.noteThread(claimed.id, input.threadId);
+    } catch {
+      // Address recording is best-effort; the pairing reply still sends.
+    }
     await replyOnce(
       deps,
       { ...ctx, workspaceId: claimed.workspaceId, bindingId: claimed.id },
@@ -248,6 +259,11 @@ export async function handleOperatorMessage(
     return { action: "pairing-required", replyText: PAIRING_REQUIRED_TEXT };
   }
   ctx.bindingId = binding.id;
+  try {
+    await deps.noteThread(binding.id, input.threadId);
+  } catch {
+    // Address recording is best-effort; the command reply still sends.
+  }
 
   const stats = parseStatsIntent(text);
   if (!stats) {

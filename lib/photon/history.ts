@@ -47,6 +47,7 @@ export type PhotonMessageRow = {
   body_text: string;
   status: "received" | "replied" | "rejected" | "sent" | "failed";
   reply_to_id: string | null;
+  idempotency_key: string | null;
   created_at: string;
 };
 
@@ -72,7 +73,7 @@ export async function recordInbound(input: {
     on conflict (direction, provider_message_id) do nothing
     returning id, workspace_id, binding_id, direction, webhook_id,
               provider_message_id, thread_id, sender_hash, body_text,
-              status, reply_to_id, created_at
+              status, reply_to_id, idempotency_key, created_at
   `) as unknown as PhotonMessageRow[];
   if (rows[0]) return { row: rows[0], deduped: false };
   // Conflict path: NULL provider ids never conflict (each delivery is new);
@@ -81,7 +82,7 @@ export async function recordInbound(input: {
     ? ((await sql`
         select id, workspace_id, binding_id, direction, webhook_id,
                provider_message_id, thread_id, sender_hash, body_text,
-               status, reply_to_id, created_at
+               status, reply_to_id, idempotency_key, created_at
         from photon_messages
         where direction = 'inbound' and provider_message_id = ${providerId}
         limit 1
@@ -113,7 +114,7 @@ export async function claimReplySlot(input: {
     on conflict (reply_to_id) do nothing
     returning id, workspace_id, binding_id, direction, webhook_id,
               provider_message_id, thread_id, sender_hash, body_text,
-              status, reply_to_id, created_at
+              status, reply_to_id, idempotency_key, created_at
   `) as unknown as PhotonMessageRow[];
   return rows[0] ?? null;
 }
@@ -135,8 +136,7 @@ export async function markOutboundFailed(outboundId: string): Promise<void> {
   await sql`update photon_messages set status = 'failed' where id = ${outboundId}`;
 }
 
-/** The inbound row is replied exactly when its outbound slot is claimed+sent. */
-export async function markInboundReplied(
+/** The inbound row is replied exactly when its outbound slot is claimed+sent. */export async function markInboundReplied(
   inboundId: string,
   workspaceId: string | null,
   bindingId: string | null,
@@ -165,4 +165,76 @@ export async function markInboundRejected(
         binding_id = coalesce(${bindingId}, binding_id)
     where id = ${inboundId}
   `;
+}
+
+/**
+ * Claim the idempotent proactive-send slot for one idempotency key.
+ * First claimant wins and MUST send; a redelivery with the same key
+ * returns the existing attempt ({deduped: true}) and must NOT resend.
+ * NULL keys never conflict (each unkeyed insert is a new attempt).
+ */
+export async function claimProactiveSlot(input: {
+  workspaceId: string;
+  bindingId: string;
+  threadId: string;
+  bodyText: string;
+  idempotencyKey: string | null;
+}): Promise<{ row: PhotonMessageRow; deduped: boolean }> {
+  const sql = await requireSql();
+  const key = input.idempotencyKey?.trim() || null;
+  const rows = (await sql`
+    insert into photon_messages
+      (workspace_id, binding_id, direction, thread_id, body_text, status, idempotency_key)
+    values (${input.workspaceId}, ${input.bindingId}, 'outbound',
+            ${input.threadId}, ${truncateBody(input.bodyText)}, 'received', ${key})
+    on conflict (idempotency_key) do nothing
+    returning id, workspace_id, binding_id, direction, webhook_id,
+              provider_message_id, thread_id, sender_hash, body_text,
+              status, reply_to_id, idempotency_key, created_at
+  `) as unknown as PhotonMessageRow[];
+  if (rows[0]) return { row: rows[0], deduped: false };
+  const existing = key
+    ? ((await sql`
+        select id, workspace_id, binding_id, direction, webhook_id,
+               provider_message_id, thread_id, sender_hash, body_text,
+               status, reply_to_id, idempotency_key, created_at
+        from photon_messages
+        where direction = 'outbound' and idempotency_key = ${key}
+        limit 1
+      `) as unknown as PhotonMessageRow[])
+    : [];
+  if (!existing[0]) throw new Error("photon proactive persist failed");
+  return { row: existing[0], deduped: true };
+}
+
+/**
+ * Durable operator history: inbound commands, bot replies, and proactive
+ * notifications for one workspace (optionally one binding), newest first.
+ * Powers console history views + Resolution Watch style follow-ups.
+ */
+export async function listOperatorHistory(input: {
+  workspaceId: string;
+  bindingId?: string | null;
+  limit?: number;
+}): Promise<PhotonMessageRow[]> {
+  const sql = await requireSql();
+  const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
+  if (input.bindingId) {
+    return (await sql`
+      select id, workspace_id, binding_id, direction, webhook_id,
+             provider_message_id, thread_id, sender_hash, body_text,
+             status, reply_to_id, idempotency_key, created_at
+      from photon_messages
+      where workspace_id = ${input.workspaceId} and binding_id = ${input.bindingId}
+      order by created_at desc, id desc limit ${limit}
+    `) as unknown as PhotonMessageRow[];
+  }
+  return (await sql`
+    select id, workspace_id, binding_id, direction, webhook_id,
+           provider_message_id, thread_id, sender_hash, body_text,
+           status, reply_to_id, idempotency_key, created_at
+    from photon_messages
+    where workspace_id = ${input.workspaceId}
+    order by created_at desc, id desc limit ${limit}
+  `) as unknown as PhotonMessageRow[];
 }

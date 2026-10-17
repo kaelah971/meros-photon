@@ -111,7 +111,7 @@ describe("sender identity", () => {
 // ---- Orchestrator with fakes replicating Neon semantics ----
 
 const WS: OperatorWorkspace = { id: "ws-1", slug: "acme", name: "Acme Support" };
-const BINDING: OperatorBinding = { id: "bind-1", workspaceId: WS.id, operatorUserId: "user-1" };
+const BINDING: OperatorBinding = { id: "bind-1", workspaceId: WS.id, operatorUserId: "user-1", threadId: "thread-1" };
 
 function makeFakes(overrides: Partial<OperatorDeps> = {}) {
   const inbounds = new Map<string, { id: string; status: string }>();
@@ -121,6 +121,7 @@ function makeFakes(overrides: Partial<OperatorDeps> = {}) {
   const base: OperatorDeps = {
     findBinding: async () => BINDING,
     claimPairing: async () => null,
+    noteThread: async () => {},
     checkStaff: async () => {},
     readStats: async () => ({
       openIssues: 3,
@@ -299,17 +300,26 @@ describe("failure honesty", () => {
   });
 
   it("photon-unconfigured path fails honestly", async () => {
-    expect(isPhotonConfigured()).toBe(false);
-    const { getBot } = await import("../photon/bot");
-    expect(() => getBot()).toThrowError(PhotonNotConfiguredError);
+    // Env-independent: force the unconfigured state even when a local
+    // .env.local carries real Photon credentials (never read or printed).
+    vi.stubEnv("IMESSAGE_PROJECT_ID", "");
+    vi.stubEnv("IMESSAGE_PROJECT_SECRET", "");
+    vi.stubEnv("IMESSAGE_WEBHOOK_SECRET", "");
     try {
-      getBot();
-    } catch (e) {
-      expect((e as PhotonNotConfiguredError).needed).toEqual([
-        "IMESSAGE_PROJECT_ID",
-        "IMESSAGE_PROJECT_SECRET",
-        "IMESSAGE_WEBHOOK_SECRET",
-      ]);
+      expect(isPhotonConfigured()).toBe(false);
+      const { getBot } = await import("../photon/bot");
+      expect(() => getBot()).toThrowError(PhotonNotConfiguredError);
+      try {
+        getBot();
+      } catch (e) {
+        expect((e as PhotonNotConfiguredError).needed).toEqual([
+          "IMESSAGE_PROJECT_ID",
+          "IMESSAGE_PROJECT_SECRET",
+          "IMESSAGE_WEBHOOK_SECRET",
+        ]);
+      }
+    } finally {
+      vi.unstubAllEnvs();
     }
   }, 120_000);
 });

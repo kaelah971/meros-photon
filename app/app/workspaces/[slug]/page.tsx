@@ -4,6 +4,7 @@ import { currentUser } from "@/lib/auth";
 import { getOwnedWorkspace } from "@/lib/db";
 import { getWorkspaceStats, listWorkspaceConversations } from "@/lib/support-ops";
 import { EmptyState, StatusPill } from "@/components/meros-ui";
+import PhotonTestNotify from "@/components/photon-test-notify";
 
 /** Console overview: real Neon-derived counts + entry points. */
 export default async function WorkspaceOverview({
@@ -71,6 +72,7 @@ export default async function WorkspaceOverview({
       {ws.product_name && (
         <p className="mt-3 text-xs text-neutral-400">Product: {ws.product_name}</p>
       )}
+      <PhotonTestNotify workspaceSlug={ws.slug} />
       <div className="mt-3 rounded-md border border-[rgba(119,255,117,0.14)] bg-[rgba(10,27,18,0.72)] px-3 py-2.5">
         <p className="text-xs text-neutral-400">Customer support URL</p>
         <div className="mt-1 flex items-center gap-2">

@@ -35,6 +35,7 @@ export type PhotonBindingRow = {
   status: BindingStatus;
   pairing_code_hash: string | null;
   pairing_expires_at: string | null;
+  thread_id: string | null;
   created_at: string;
   last_seen_at: string | null;
 };
@@ -85,32 +86,65 @@ export async function issuePairingCode(input: {
   return { bindingId: row.id, code, expiresAt: row.pairing_expires_at };
 }
 
-/** Resolve an inbound sender to its ACTIVE binding (touching last_seen). */
+/**
+ * Resolve an inbound sender to its ACTIVE binding. When the inbound thread
+ * is supplied, it is recorded as the binding's durable conversation address
+ * (used for server-initiated outbound after cold starts) alongside last_seen.
+ */
 export async function resolveActiveBinding(
   senderHash: string,
+  threadId?: string | null,
 ): Promise<PhotonBindingRow | null> {
   const sql = await requireSql();
   const rows = (await sql`
     select id, workspace_id, operator_user_id, sender_hash, status,
-           pairing_code_hash, pairing_expires_at, created_at, last_seen_at
+           pairing_code_hash, pairing_expires_at, thread_id, created_at, last_seen_at
     from photon_operator_bindings
     where sender_hash = ${senderHash} and status = 'active'
     order by created_at desc limit 1
   `) as unknown as PhotonBindingRow[];
   const row = rows[0] ?? null;
   if (row) {
-    await sql`update photon_operator_bindings set last_seen_at = now() where id = ${row.id}`;
+    const thread = threadId?.trim() || null;
+    await sql`update photon_operator_bindings
+      set thread_id = coalesce(${thread}, thread_id), last_seen_at = now()
+      where id = ${row.id}`;
+    if (thread) row.thread_id = thread;
   }
   return row;
 }
 
 /**
+ * Resolve the ACTIVE binding for one staff user inside one workspace.
+ * Proactive sends use this (never a raw sender); revoked/pending rows
+ * never resolve here, so revocation immediately stops outbound.
+ */
+export async function resolveActiveBindingForOperator(
+  workspaceId: string,
+  operatorUserId: string,
+): Promise<PhotonBindingRow | null> {
+  const sql = await requireSql();
+  const rows = (await sql`
+    select id, workspace_id, operator_user_id, sender_hash, status,
+           pairing_code_hash, pairing_expires_at, thread_id, created_at, last_seen_at
+    from photon_operator_bindings
+    where workspace_id = ${workspaceId}
+      and operator_user_id = ${operatorUserId}
+      and status = 'active'
+    order by created_at desc limit 1
+  `) as unknown as PhotonBindingRow[];
+  return rows[0] ?? null;
+}
+
+/**
  * Claim a pending binding with `pair <CODE>`: single-use, expiry-checked.
  * Binds this sender hash to the staff user + workspace that minted the code.
+ * Records the claiming thread as the first conversation address when known.
  */
 export async function claimPairingCode(
   code: string,
   senderHash: string,
+  threadId?: string | null,
 ): Promise<PhotonBindingRow | null> {
   const sql = await requireSql();
   const clean = code.trim().toUpperCase();
@@ -119,22 +153,24 @@ export async function claimPairingCode(
     update photon_operator_bindings
     set status = 'active', sender_hash = ${senderHash},
         pairing_code_hash = null, pairing_expires_at = null,
+        thread_id = coalesce(${threadId?.trim() || null}, thread_id),
         last_seen_at = now()
     where pairing_code_hash = ${hashPairingCode(clean)}
       and status = 'pending'
       and pairing_expires_at is not null
       and pairing_expires_at > now()
     returning id, workspace_id, operator_user_id, sender_hash, status,
-              pairing_code_hash, pairing_expires_at, created_at, last_seen_at
+              pairing_code_hash, pairing_expires_at, thread_id, created_at, last_seen_at
   `) as unknown as PhotonBindingRow[];
   return rows[0] ?? null;
 }
 
-/** Staff revocation (caller enforces requireStaff for the workspace). */
+/** Staff revocation (caller enforces requireStaff for the workspace).
+ * Clears the conversation address so a revoked binding can never send. */
 export async function revokeBinding(bindingId: string, workspaceId: string): Promise<boolean> {
   const sql = await requireSql();
   const rows = (await sql`
-    update photon_operator_bindings set status = 'revoked'
+    update photon_operator_bindings set status = 'revoked', thread_id = null
     where id = ${bindingId} and workspace_id = ${workspaceId} and status != 'revoked'
     returning id
   `) as unknown as { id: string }[];

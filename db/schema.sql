@@ -303,3 +303,21 @@ create index if not exists photon_messages_binding_idx
 -- and must NOT send. NULL reply_to_ids never conflict with each other.
 create unique index if not exists photon_messages_reply_unique
   on photon_messages (reply_to_id);
+
+-- Meros Photon S2 durable operator conversation address + proactive sends.
+-- bindings.thread_id is the last inbound thread observed for an ACTIVE
+-- binding: the durable conversation address used for server-initiated
+-- outbound after cold starts (adapter rebuilds the thread from the chat
+-- GUID encoded in it; no process-local state is ever required).
+-- messages.idempotency_key scopes proactive-send dedupe: same key returns
+-- the existing attempt instead of sending twice. NULL keys never conflict.
+-- Idempotent: safe to re-run. Zero Walrus writes.
+
+alter table if exists photon_operator_bindings
+  add column if not exists thread_id text;
+
+alter table if exists photon_messages
+  add column if not exists idempotency_key text;
+
+create unique index if not exists photon_messages_idempotency_unique
+  on photon_messages (idempotency_key);

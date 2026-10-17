@@ -39,6 +39,7 @@ export async function POST(req: Request) {
     const { claimProactiveSlot, markOutboundSent, markOutboundFailed } = await import(
       "@/lib/photon/history"
     );
+    const { getPreferences, isStoredPreferencesMalformed } = await import("@/lib/photon/preferences");
     const { postToThread } = await import("@/lib/photon/bot");
     const { requireStaff: checkStaff } = await import("@/lib/support-ops");
 
@@ -49,6 +50,9 @@ export async function POST(req: Request) {
         type: "connectivity_test",
         body: CONNECTIVITY_TEST_BODY,
         idempotencyKey: key,
+        // Explicit staff click: bypasses preference suppression (quiet
+        // hours + disabled toggle). Binding, staff, and thread gates stay.
+        isTest: true,
       },
       {
         findBindingForOperator: async (workspaceId, operatorUserId) => {
@@ -64,6 +68,19 @@ export async function POST(req: Request) {
         },
         checkStaff: async (userId, workspaceId) => {
           await checkStaff(userId, workspaceId);
+        },
+        getPreferences: async (workspaceId, operatorUserId) => {
+          const p = await getPreferences(workspaceId, operatorUserId);
+          return {
+            proactiveEnabled: p.proactiveEnabled,
+            quietHoursEnabled: p.quietHoursEnabled,
+            quietStart: p.quietStart,
+            quietEnd: p.quietEnd,
+            timezone: p.timezone,
+            // getPreferences coerces for display; the send path needs the
+            // raw verdict, so re-check stored state explicitly here.
+            malformed: await isStoredPreferencesMalformed(workspaceId, operatorUserId),
+          };
         },
         claimProactive: async (input) => {
           const { row, deduped } = await claimProactiveSlot(input);

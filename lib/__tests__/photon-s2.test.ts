@@ -36,6 +36,14 @@ function makeNotifyFakes(overrides: Partial<NotifyDeps> = {}, shared?: { binding
       return null;
     },
     checkStaff: async () => {},
+  getPreferences: async () => ({
+    proactiveEnabled: true,
+    quietHoursEnabled: false,
+    quietStart: "22:00",
+    quietEnd: "07:00",
+    timezone: "Africa/Lagos",
+    malformed: false,
+  }),
     claimProactive: async (input) => {
       const existing = input.idempotencyKey
         ? msgs.find((m) => m.direction === "outbound" && m.idempotencyKey === input.idempotencyKey)
@@ -70,6 +78,7 @@ const INPUT = {
   type: "connectivity_test" as const,
   body: CONNECTIVITY_TEST_BODY,
   idempotencyKey: "key-1",
+  isTest: false,
 };
 
 describe("active binding resolution", () => {

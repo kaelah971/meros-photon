@@ -321,3 +321,20 @@ alter table if exists photon_messages
 
 create unique index if not exists photon_messages_idempotency_unique
   on photon_messages (idempotency_key);
+
+-- Meros Photon S3 per-operator notification preferences.
+-- One row per (workspace, operator). Missing row = defaults:
+-- proactive ON, quiet hours OFF (Africa/Lagos offered as the UI default).
+-- Additive + idempotent. Zero Walrus writes.
+
+create table if not exists operator_preferences (
+  workspace_id text not null references workspaces(id) on delete cascade,
+  operator_user_id text not null references "user"(id) on delete cascade,
+  proactive_enabled boolean not null default true,
+  quiet_hours_enabled boolean not null default false,
+  quiet_start text not null default '22:00',
+  quiet_end text not null default '07:00',
+  timezone text not null default 'Africa/Lagos',
+  updated_at timestamptz not null default now(),
+  primary key (workspace_id, operator_user_id)
+);

@@ -25,6 +25,13 @@ export type NotifyInput = {
   type: OperatorNotificationType;
   body: string;
   idempotencyKey: string;
+  /**
+   * Explicit staff-clicked connectivity tests bypass preference suppression
+   * (quiet hours + disabled toggle): the operator deliberately asked for
+   * this one message. All other types enforce preferences. Auth, binding,
+   * and conversation-address gates still apply to tests.
+   */
+  isTest: boolean;
 };
 
 export type NotifyDeps = {
@@ -33,6 +40,20 @@ export type NotifyDeps = {
     operatorUserId: string,
   ) => Promise<NotifyBinding | null>;
   checkStaff: (userId: string, workspaceId: string) => Promise<void>;
+  getPreferences: (
+    workspaceId: string,
+    operatorUserId: string,
+  ) => Promise<{
+    proactiveEnabled: boolean;
+    quietHoursEnabled: boolean;
+    quietStart: string;
+    quietEnd: string;
+    timezone: string;
+    /** True only when a row exists but fails validation. Missing row
+     * is NOT malformed (documented defaults apply). Tests bypass even
+     * malformed rows; non-test sends are suppressed, never guessed. */
+    malformed: boolean;
+  }>;
   claimProactive: (input: {
     workspaceId: string;
     bindingId: string;
@@ -54,11 +75,16 @@ export type NotifyResult =
         | "no_binding"
         | "workspace_mismatch"
         | "not_staff"
+        | "suppressed_prefs_invalid"
+        | "suppressed_disabled"
+        | "suppressed_quiet_hours"
         | "no_conversation"
         | "already_attempted"
         | "provider_failed"
         | "degraded";
       recoverable: boolean;
+      /** True when the send was deliberately skipped by operator preferences. */
+      suppressed?: boolean;
       message: string;
     };
 
@@ -74,8 +100,11 @@ function fail(
   code: Extract<NotifyResult, { ok: false }>["code"],
   recoverable: boolean,
   message: string,
+  suppressed = false,
 ): NotifyResult {
-  return { ok: false, code, recoverable, message };
+  return suppressed
+    ? { ok: false, code, recoverable, suppressed: true as const, message }
+    : { ok: false, code, recoverable, message };
 }
 
 export async function sendOperatorNotification(
@@ -122,7 +151,53 @@ export async function sendOperatorNotification(
     );
   }
 
-  // 3. A recorded conversation address is required. Server-initiated sends
+  // 3. Preference gates for NON-test notifications. Explicit staff-clicked
+  // tests bypass suppression (the operator deliberately asked for this one
+  // message); everything else honors the operator's own settings. Checked
+  // BEFORE claiming any idempotency slot: suppressed events never consume
+  // a key, so a later send is not mistaken for a duplicate.
+  if (!input.isTest) {
+    let prefs: {
+      proactiveEnabled: boolean;
+      quietHoursEnabled: boolean;
+      quietStart: string;
+      quietEnd: string;
+      timezone: string;
+      malformed: boolean;
+    };
+    try {
+      prefs = await deps.getPreferences(binding.workspaceId, binding.operatorUserId);
+    } catch {
+      return fail("degraded", true, "workspace state unreachable — nothing was sent");
+    }
+    if (prefs.malformed) {
+      return fail(
+        "suppressed_prefs_invalid",
+        true,
+        "operator preferences are unreadable — refusing to send; re-save preferences to repair",
+        true,
+      );
+    }
+    if (!prefs.proactiveEnabled) {
+      return fail(
+        "suppressed_disabled",
+        true,
+        "proactive notifications are disabled for this operator — enable them to receive this",
+        true,
+      );
+    }
+    const { isQuietNow } = await import("./preferences");
+    if (isQuietNow(prefs)) {
+      return fail(
+        "suppressed_quiet_hours",
+        true,
+        "inside quiet hours — held, not sent",
+        true,
+      );
+    }
+  }
+
+  // 4. A recorded conversation address is required. Server-initiated sends
   // need a thread the operator actually opened (recorded from inbound);
   // the adapter rebuilds it after cold starts, but it cannot be invented.
   const threadId = binding.threadId?.trim() || null;
@@ -134,7 +209,7 @@ export async function sendOperatorNotification(
     );
   }
 
-  // 4. Idempotent claim BEFORE sending: same key returns the prior attempt
+  // 5. Idempotent claim BEFORE sending: same key returns the prior attempt
   // and never resends. A prior FAILED attempt is reported (not retried or
   // hidden) so the caller can mint a fresh explicit key to retry.
   let slot: { id: string; status: string; providerMessageId: string | null; deduped: boolean };
@@ -160,7 +235,7 @@ export async function sendOperatorNotification(
     );
   }
 
-  // 5. Send through the adapter. A resolved post = accepted by Spectrum
+  // 6. Send through the adapter. A resolved post = accepted by Spectrum
   // (provider id recorded). Handset delivery is NOT confirmed by this —
   // callers must report acceptance, never claimed delivery.
   let providerId: string | null = null;

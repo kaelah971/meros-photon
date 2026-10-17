@@ -413,3 +413,63 @@ create table if not exists incident_events (
 
 create index if not exists incident_events_incident_idx
   on incident_events (incident_id, created_at);
+
+-- Meros S5 automatic issue detection + candidate clusters.
+-- Candidates are reviewable suggestions, never incidents: confirmation stays
+-- human via the S4 domain. Evidence is reference-only (message/conversation
+-- rows stay canonical in their own tables). A candidate surfaces for review
+-- only with >= 2 distinct conversations. Dismissed rows are terminal history:
+-- unchanged evidence never re-surfaces them; materially new reports form new
+-- candidates without touching old dismissals. Additive + idempotent.
+
+create table if not exists issue_candidates (
+  id uuid primary key default gen_random_uuid(),
+  workspace_id text not null references workspaces(id) on delete cascade,
+  title text not null,
+  summary text not null default '',
+  status text not null default 'pending'
+    check (status in ('pending', 'accepted', 'dismissed')),
+  confidence text not null default 'medium'
+    check (confidence in ('low', 'medium', 'high')),
+  rationale text not null default '',
+  accepted_incident_id uuid references incidents(id) on delete set null,
+  dismissed_at timestamptz,
+  dismissed_by_user_id text references "user"(id) on delete set null,
+  dismissal_note text,
+  first_seen_at timestamptz not null default now(),
+  last_seen_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  created_at timestamptz not null default now()
+);
+
+create index if not exists issue_candidates_workspace_idx
+  on issue_candidates (workspace_id, status, last_seen_at desc);
+
+create table if not exists issue_candidate_members (
+  candidate_id uuid not null references issue_candidates(id) on delete cascade,
+  conversation_id uuid not null references conversations(id) on delete cascade,
+  customer_id text not null references customers(id) on delete cascade,
+  added_at timestamptz not null default now(),
+  primary key (candidate_id, conversation_id)
+);
+
+create table if not exists issue_candidate_messages (
+  candidate_id uuid not null references issue_candidates(id) on delete cascade,
+  message_id uuid not null references messages(id) on delete cascade,
+  conversation_id uuid not null references conversations(id) on delete cascade,
+  customer_id text not null references customers(id) on delete cascade,
+  added_at timestamptz not null default now(),
+  primary key (candidate_id, message_id)
+);
+
+-- One message attributes to exactly one candidate. Concurrent deliveries of
+-- the same persisted message converge: exactly one insert wins, losers
+-- re-read the winner instead of duplicating. Idempotent + additive.
+create unique index if not exists issue_candidate_messages_message_unique
+  on issue_candidate_messages (message_id);
+
+-- S5 follow-up: created_at was missing from the first revision.
+-- Standalone ALTER so existing tables gain it (CREATE ... IF NOT EXISTS
+-- never revisits a table that already exists). Idempotent.
+alter table if exists issue_candidates
+  add column if not exists created_at timestamptz not null default now();

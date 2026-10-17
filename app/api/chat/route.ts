@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 import {
   MAX_DISTANCE,
   RECALL_TOP_K,
@@ -127,13 +127,15 @@ export async function POST(req: Request) {
   // Durability first: the USER complaint is persisted BEFORE any recall or
   // generation, so a model failure can never lose it. Idempotent on
   // clientMessageId — a retried send resumes instead of duplicating.
+  let userMessageId: string | null = null;
   try {
-    await addUserMessage({
+    const stored = await addUserMessage({
       conversationId,
       content: message,
       clientId: typeof body.clientMessageId === "string" ? body.clientMessageId : null,
       attachments: attachmentMetas,
     });
+    userMessageId = stored.id;
   } catch (e) {
     return NextResponse.json(
       { ok: false, error: e instanceof Error ? e.message : "message persist failed", conversationId },
@@ -307,6 +309,47 @@ export async function POST(req: Request) {
   }
 
   console.log(`[chat] done (private=${p.status} shared=${s.status} knowledge=${k.status} provenance=${provenance.length})`);
+
+  // S5 automatic issue detection, AFTER the support answer is secured.
+  // Runs in the background via after(): zero added response latency, and
+  // any detection failure is isolated here — it can never lose the
+  // complaint, break the reply, or throw into this request. Skipped for
+  // resolutions, empty turns, and when after() has no request scope.
+  if (userMessageId && !resolved && message.trim()) {
+    const detectCtx = {
+      workspaceId: tenant.workspaceId,
+      conversationId,
+      customerId: tenant.customerId,
+      messageId: userMessageId,
+      text: message.slice(0, 2000),
+    };
+    try {
+      after(() =>
+        (async () => {
+          try {
+            const { detectFromChat, recentConversationExcerpts } = await import("@/lib/detection");
+            const { geminiJudge } = await import("@/lib/detection-gemini");
+            const { isGeminiConfigured } = await import("@/lib/env");
+            if (!isGeminiConfigured()) {
+              console.log("[chat] detection skipped (Gemini unconfigured — degrading without guessing)");
+              return;
+            }
+            const outcome = await detectFromChat(detectCtx, {
+              judge: geminiJudge(),
+              listRecentExcerpts: recentConversationExcerpts,
+              store: await import("@/lib/issue-candidates"),
+            });
+            console.log(`[chat] detection ${outcome.action}` + ("candidateId" in outcome ? ` candidate=${outcome.candidateId}` : ""));
+          } catch (e) {
+            console.log(`[chat] detection failed safely: ${e instanceof Error ? e.message : e}`);
+          }
+        })(),
+      );
+    } catch {
+      // after() outside request scope (tests, dev snippets): skip silently.
+    }
+  }
+
   return NextResponse.json({
     ok: true,
     answer,

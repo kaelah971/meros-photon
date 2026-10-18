@@ -716,3 +716,19 @@ export async function listIncidentEvents(
     order by ie.created_at, ie.id
   `) as unknown as IncidentEventRow[];
 }
+
+/**
+ * Non-terminal incidents a conversation is linked to (S6 refresh scope).
+ * Bounded; used to schedule evidence-brief rebuilds on new reports.
+ */
+export async function listOpenIncidentIdsForConversation(conversationId: string): Promise<string[]> {
+  const sql = await requireSql();
+  const rows = (await sql`
+    select iv.incident_id from incident_conversations iv
+    join incidents i on i.id = iv.incident_id
+    where iv.conversation_id = ${conversationId}
+      and i.status not in ('resolved', 'dismissed', 'merged', 'split')
+    order by i.updated_at desc limit 5
+  `) as unknown as { incident_id: string }[];
+  return rows.map((r) => r.incident_id);
+}

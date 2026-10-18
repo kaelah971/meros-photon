@@ -473,3 +473,24 @@ create unique index if not exists issue_candidate_messages_message_unique
 -- never revisits a table that already exists). Idempotent.
 alter table if exists issue_candidates
   add column if not exists created_at timestamptz not null default now();
+
+-- Meros S6 incident evidence briefs: one durable brief per incident.
+-- Findings are strictly source-backed (message ids must exist in linked
+-- conversations); anything uncited is rejected, never stored. Fingerprint
+-- covers the exact source set so unchanged evidence never regenerates.
+-- Status: pending (building) | current | stale (newer evidence waiting) |
+-- failed (kept only when no usable brief exists yet). Additive + idempotent.
+
+create table if not exists incident_evidence_briefs (
+  incident_id uuid primary key references incidents(id) on delete cascade,
+  workspace_id text not null references workspaces(id) on delete cascade,
+  status text not null default 'pending'
+    check (status in ('pending', 'current', 'stale', 'failed')),
+  version integer not null default 1,
+  fingerprint text not null default '',
+  findings jsonb not null default '{}',
+  source_count integer not null default 0,
+  generated_at timestamptz,
+  error text,
+  updated_at timestamptz not null default now()
+);

@@ -7,6 +7,7 @@ import {
   addIncidentEvidence,
   type EvidenceInput,
 } from "@/lib/incidents";
+import { scheduleBriefRefresh } from "@/lib/evidence-brief";
 import { requireStaff } from "@/lib/support-ops";
 
 function statusOf(e: unknown, fallback: number): number {
@@ -50,6 +51,7 @@ export async function POST(
         conversationId: body.conversationId,
         actorUserId: user.id,
       });
+      scheduleBriefRefresh(id, ws.id);
       return NextResponse.json({ ok: true, linked });
     }
     if (typeof body.customerId === "string" && body.customerId) {

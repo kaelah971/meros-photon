@@ -8,6 +8,7 @@ import {
   markCandidateDismissed,
 } from "@/lib/issue-candidates";
 import { addIncidentConversation, createIncident, type IncidentSeverity } from "@/lib/incidents";
+import { scheduleBriefRefresh } from "@/lib/evidence-brief";
 import { INCIDENT_SEVERITIES } from "@/lib/incidents";
 import { requireStaff } from "@/lib/support-ops";
 
@@ -90,6 +91,7 @@ export async function POST(
         });
       }
       await markCandidateAccepted({ candidateId: id, workspaceId: ws.id, incidentId: incident.id, actorUserId: user.id });
+      scheduleBriefRefresh(incident.id, ws.id);
       return NextResponse.json({ ok: true, incident: { id: incident.id, title: incident.title } }, { status: 201 });
     }
 
@@ -106,6 +108,7 @@ export async function POST(
         });
       }
       await markCandidateAccepted({ candidateId: id, workspaceId: ws.id, incidentId: body.incidentId, actorUserId: user.id });
+      scheduleBriefRefresh(body.incidentId, ws.id);
       return NextResponse.json({ ok: true, incident: { id: body.incidentId } });
     }
 

@@ -332,16 +332,47 @@ export async function POST(req: Request) {
             const { isGeminiConfigured } = await import("@/lib/env");
             if (!isGeminiConfigured()) {
               console.log("[chat] detection skipped (Gemini unconfigured — degrading without guessing)");
-              return;
+            } else {
+              try {
+                const outcome = await detectFromChat(detectCtx, {
+                  judge: geminiJudge(),
+                  listRecentExcerpts: recentConversationExcerpts,
+                  store: await import("@/lib/issue-candidates"),
+                });
+                console.log(`[chat] detection ${outcome.action}` + ("candidateId" in outcome ? ` candidate=${outcome.candidateId}` : ""));
+              } catch (e) {
+                console.log(`[chat] detection failed safely: ${e instanceof Error ? e.message : e}`);
+              }
             }
-            const outcome = await detectFromChat(detectCtx, {
-              judge: geminiJudge(),
-              listRecentExcerpts: recentConversationExcerpts,
-              store: await import("@/lib/issue-candidates"),
-            });
-            console.log(`[chat] detection ${outcome.action}` + ("candidateId" in outcome ? ` candidate=${outcome.candidateId}` : ""));
+            // S6: new report on a linked conversation refreshes that
+            // incident's evidence brief (fingerprint-gated, non-blocking).
+            // Independent of detection outcome so plain follow-ups still
+            // refresh the brief; safe-skips when Gemini is unconfigured.
+            try {
+              const { listOpenIncidentIdsForConversation } = await import("@/lib/incidents");
+              const linked = await listOpenIncidentIdsForConversation(detectCtx.conversationId);
+              if (linked.length > 0) {
+                const { isGeminiConfigured: isGeminiOn } = await import("@/lib/env");
+                if (!isGeminiOn()) {
+                  console.log("[chat] brief refresh skipped (Gemini unconfigured)");
+                } else {
+                  const { refreshBriefIfNeeded, realBriefStore } = await import("@/lib/evidence-brief");
+                  const { geminiBriefJudge } = await import("@/lib/evidence-brief-gemini");
+                  const store = await realBriefStore();
+                  for (const incidentId of linked) {
+                    const r = await refreshBriefIfNeeded(incidentId, detectCtx.workspaceId, {
+                      store,
+                      judge: geminiBriefJudge(),
+                    });
+                    console.log(`[chat] brief ${incidentId.slice(0, 8)} ${r.action}`);
+                  }
+                }
+              }
+            } catch (e) {
+              console.log(`[chat] brief refresh skipped safely: ${e instanceof Error ? e.message : e}`);
+            }
           } catch (e) {
-            console.log(`[chat] detection failed safely: ${e instanceof Error ? e.message : e}`);
+            console.log(`[chat] background intelligence failed safely: ${e instanceof Error ? e.message : e}`);
           }
         })(),
       );

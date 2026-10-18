@@ -20,6 +20,7 @@ import IncidentSnapshot from "@/components/incident-snapshot";
 import IncidentFixMatches from "@/components/incident-fix-matches";
 import IncidentRecoveryPlan from "@/components/incident-recovery-plan";
 import ResolutionWatchSection from "@/components/resolution-watch-section";
+import RecoverManySection from "@/components/recover-many-section";
 import ClosureSection from "@/components/closure-section";
 
 const NEXT: Record<string, string[]> = {
@@ -218,6 +219,8 @@ export default async function IncidentDetail({
       <IncidentRecoveryPlan workspaceSlug={slug} workspaceId={ws.id} incidentId={incident.id} />
 
       <ResolutionWatchSection workspaceSlug={slug} workspaceId={ws.id} incidentId={incident.id} />
+
+      <RecoverManySection workspaceSlug={slug} workspaceId={ws.id} incidentId={incident.id} />
 
       <ClosureSection workspaceSlug={slug} workspaceId={ws.id} incidentId={incident.id} />
 

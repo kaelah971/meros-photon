@@ -798,5 +798,67 @@ create table if not exists knowledge_findings (
 create unique index if not exists knowledge_findings_open_unique
   on knowledge_findings (workspace_id, entity_key)
   where status in ('open', 'acknowledged');
-create index if not exists knowledge_findings_workspace_idx
-  on knowledge_findings (workspace_id, status, updated_at desc);
+-- Meros S15E Recover Many: staff-reviewed, per-recipient recovery
+-- staging. One review workflow may cover several individually eligible
+-- customers. Batch approval binds exact plan/brief/recipients/payloads;
+-- per-recipient rows track eligibility, drafts, approval and publish
+-- state independently. Additive + idempotent. No lifecycle coupling.
+
+alter table if exists messages
+  add column if not exists author_kind text not null default 'ai'
+  check (author_kind in ('ai', 'staff'));
+
+create table if not exists incident_recovery_batches (
+  id uuid primary key default gen_random_uuid(),
+  incident_id uuid not null references incidents(id) on delete cascade,
+  workspace_id text not null references workspaces(id) on delete cascade,
+  plan_id uuid references incident_recovery_plans(id) on delete set null,
+  plan_version integer not null default 0,
+  brief_fingerprint text not null default '',
+  scope_hash text not null default '',
+  fingerprint text not null default '',
+  status text not null default 'draft'
+    check (status in ('draft', 'approved', 'revoked', 'superseded')),
+  high_impact boolean not null default false,
+  created_by_user_id text references "user"(id) on delete set null,
+  approved_by_user_id text references "user"(id) on delete set null,
+  approved_at timestamptz,
+  note text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create unique index if not exists incident_recovery_batches_active_unique
+  on incident_recovery_batches (incident_id)
+  where status in ('draft', 'approved');
+create index if not exists incident_recovery_batches_incident_idx
+  on incident_recovery_batches (incident_id, created_at desc);
+
+create table if not exists incident_recovery_recipients (
+  id uuid primary key default gen_random_uuid(),
+  batch_id uuid not null references incident_recovery_batches(id) on delete cascade,
+  incident_id uuid not null references incidents(id) on delete cascade,
+  workspace_id text not null references workspaces(id) on delete cascade,
+  conversation_id uuid not null references conversations(id) on delete cascade,
+  customer_id text not null references customers(id) on delete cascade,
+  eligibility text not null default 'needs_review'
+    check (eligibility in ('eligible', 'needs_review', 'excluded')),
+  reason_code text not null default 'unevaluated',
+  evidence_refs jsonb not null default '[]',
+  draft_text text not null default '',
+  payload_hash text not null default '',
+  status text not null default 'draft'
+    check (status in ('draft', 'approved', 'published_to_conversation', 'failed', 'unknown')),
+  idempotency_key text not null default '',
+  provider_message_id text,
+  decided_by_user_id text references "user"(id) on delete set null,
+  decided_at timestamptz,
+  error_note text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create unique index if not exists incident_recovery_recipients_batch_conv_unique
+  on incident_recovery_recipients (batch_id, conversation_id);
+create unique index if not exists incident_recovery_recipients_idem_unique
+  on incident_recovery_recipients (workspace_id, idempotency_key);
+create index if not exists incident_recovery_recipients_batch_idx
+  on incident_recovery_recipients (batch_id, created_at);

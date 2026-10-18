@@ -41,6 +41,8 @@ type Msg =
   | {
       kind: "assistant";
       text: string;
+      /** Staff-authored replies render with a Meros team badge, never as AI output. */
+      author?: "ai" | "staff";
       provenance: ProvenanceItem[];
       memoryUsed: { private: boolean; shared: boolean; knowledge?: boolean };
       historyTurns: number;
@@ -807,6 +809,7 @@ export function SupportChat({
           (m: {
             role: string;
             text: string;
+            author?: string;
             memoryUsed?: { private: boolean; shared: boolean; knowledge?: boolean };
             provenance?: ProvenanceItem[];
           }) => {
@@ -819,6 +822,7 @@ export function SupportChat({
             return {
               kind: "assistant",
               text: m.text,
+              author: m.author === "staff" ? "staff" : "ai",
               provenance: m.provenance ?? [],
               memoryUsed: m.memoryUsed ?? { private: false, shared: false },
               historyTurns: prior.length,
@@ -1126,6 +1130,9 @@ export function SupportChat({
             </div>
           ) : (
             <div key={i} className="max-w-[95%]">
+              {m.author === "staff" ? (
+                <p className="mb-1 text-[10px] font-medium uppercase tracking-wider text-[#9AFF8D]">Meros team</p>
+              ) : null}
               <div className="rounded-lg border border-[rgba(119,255,117,0.14)] bg-[rgba(10,27,18,0.72)] px-4 py-2.5 text-sm leading-6 text-neutral-100">
                 <Markdown text={m.text} />
               </div>

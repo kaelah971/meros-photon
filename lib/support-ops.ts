@@ -44,6 +44,8 @@ export type MessageRow = {
   role: "user" | "assistant";
   content: string;
   model: string | null;
+  /** Who authored an assistant message: model output vs staff operator. */
+  author_kind: "ai" | "staff";
   memory_private_used: boolean;
   memory_shared_used: boolean;
   memory_knowledge_used: boolean;
@@ -173,16 +175,28 @@ export async function addAssistantMessage(input: {
   sharedUsed: boolean;
   knowledgeUsed: boolean;
   provenance: ProvenanceItem[];
+  /** Client-supplied idempotency key; retried sends reuse the same row. */
+  clientId?: string | null;
+  /** Staff-authored replies are marked so customers and audits can tell them apart from model output. */
+  authorKind?: "ai" | "staff";
 }): Promise<string> {
   const sql = await requireSql();
+  const clientId = (input.clientId ?? "").trim() || randomUUID();
   const rows = (await sql`
-    insert into messages (conversation_id, role, content, model, memory_private_used, memory_shared_used, memory_knowledge_used, memory_provenance)
-    values (${input.conversationId}, 'assistant', ${input.content}, ${input.model}, ${input.privateUsed}, ${input.sharedUsed}, ${input.knowledgeUsed}, ${JSON.stringify(input.provenance)})
+    insert into messages (conversation_id, client_id, role, content, model, author_kind, memory_private_used, memory_shared_used, memory_knowledge_used, memory_provenance)
+    values (${input.conversationId}, ${clientId}, 'assistant', ${input.content}, ${input.model}, ${input.authorKind ?? "ai"}, ${input.privateUsed}, ${input.sharedUsed}, ${input.knowledgeUsed}, ${JSON.stringify(input.provenance)})
+    on conflict (conversation_id, client_id) do nothing
     returning id
   `) as unknown as { id: string }[];
-  if (!rows[0]) throw new Error("assistant message persist failed");
-  await sql`update conversations set last_message_at = now(), updated_at = now() where id = ${input.conversationId}`;
-  return rows[0].id;
+  if (rows[0]) {
+    await sql`update conversations set last_message_at = now(), updated_at = now() where id = ${input.conversationId}`;
+    return rows[0].id;
+  }
+  const existing = (await sql`
+    select id from messages where conversation_id = ${input.conversationId} and client_id = ${clientId} limit 1
+  `) as unknown as { id: string }[];
+  if (!existing[0]) throw new Error("assistant message persist failed");
+  return existing[0].id;
 }
 
 /** Bounded recent turns for model context — Neon history, never the browser transcript. */
@@ -205,7 +219,7 @@ export async function listRecentTurns(
 export async function listMessages(conversationId: string): Promise<MessageRow[]> {
   const sql = await requireSql();
   return (await sql`
-    select id, conversation_id, client_id, role, content, model,
+    select id, conversation_id, client_id, role, content, model, author_kind,
            memory_private_used, memory_shared_used, memory_knowledge_used, memory_provenance, attachments, created_at
     from messages where conversation_id = ${conversationId}
     order by created_at, id

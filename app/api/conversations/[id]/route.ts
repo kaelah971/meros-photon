@@ -34,6 +34,7 @@ export async function GET(
       messages: messages.map((m) => ({
         role: m.role,
         text: m.content,
+        author: m.role === "assistant" ? (m.author_kind === "staff" ? "staff" : "ai") : undefined,
         memoryUsed: {
           private: m.memory_private_used,
           shared: m.memory_shared_used,

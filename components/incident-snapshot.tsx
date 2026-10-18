@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { headers } from "next/headers";
 import { getIncidentBrief } from "@/lib/evidence-brief";
 import { buildSnapshot } from "@/lib/incident-snapshot";
@@ -76,6 +77,14 @@ export default async function IncidentSnapshot({
       <pre className="mt-1.5 whitespace-pre-wrap font-sans text-[11px] leading-5 text-neutral-300">
         {snapshot.text}
       </pre>
+      <p className="mt-2 text-[11px]">
+        <Link
+          className="text-[#9AFF8D] hover:underline"
+          href={`/app/workspaces/${workspaceSlug}/incidents/${incident.id}/evidence`}
+        >
+          Open full evidence record →
+        </Link>
+      </p>
       {snapshot.sendable ? (
         <SnapshotSendButton
           key={snapshot.fingerprint}

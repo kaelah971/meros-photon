@@ -193,6 +193,10 @@ export function incidentLink(slug: string, id: string): string {
   return `/app/workspaces/${slug}/incidents/${id}`;
 }
 
+export function evidenceLink(slug: string, id: string): string {
+  return `/app/workspaces/${slug}/incidents/${id}/evidence`;
+}
+
 // ---- Reply builders (pure) ----
 
 export function incidentsReply(slug: string, rows: IncidentView[]): string {
@@ -271,8 +275,8 @@ export function evidenceReply(slug: string, incidentId: string, title: string, b
   }
   if (brief.unknowns.length > 0) lines.push(`Unknowns: ${brief.unknowns.slice(0, 3).join(" · ").slice(0, 200)}`);
   if (brief.contradictions.length > 0) lines.push(`Conflicts: ${brief.contradictions.slice(0, 2).join(" · ").slice(0, 200)}`);
-  lines.push(`Full brief: ${incidentLink(slug, incidentId)}`);
-  return fitReply(lines.join("\n"), incidentLink(slug, incidentId));
+  lines.push(`Full brief: ${evidenceLink(slug, incidentId)}`);
+  return fitReply(lines.join("\n"), evidenceLink(slug, incidentId));
 }
 
 function tierLabel(tier: string): string {

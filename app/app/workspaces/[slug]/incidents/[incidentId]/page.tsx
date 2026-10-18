@@ -194,6 +194,12 @@ export default async function IncidentDetail({
 
       <EvidenceBrief workspaceSlug={slug} workspaceId={ws.id} incidentId={incident.id} />
 
+      <p className="mt-2 text-[11px]">
+        <Link className="text-[#9AFF8D] hover:underline" href={`/app/workspaces/${slug}/incidents/${incident.id}/evidence`}>
+          Open full evidence record →
+        </Link>
+      </p>
+
       <IncidentSnapshot
         workspaceSlug={slug}
         workspaceId={ws.id}

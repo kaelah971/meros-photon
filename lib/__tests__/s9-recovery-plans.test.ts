@@ -426,7 +426,7 @@ describe("generation orchestration (fakes)", () => {
         ...BRIEF,
         findings: { facts: [], corroborated: [], contradictions: [], unknowns: ["What happened?"], hypotheses: [] },
       },
-    ] as const) {
+    ] as (PlanBrief | null)[]) {
       const { deps, input, rows, calls } = makeDeps({ brief });
       const r = await generatePlanIfNeeded(input.incidentId, input.workspaceId, "op-1", deps);
       expect(r.action).toBe("insufficient");

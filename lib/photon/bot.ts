@@ -10,6 +10,7 @@ import {
   isPhotonConfigured,
 } from "./config";
 import { handleOperatorMessage, type OperatorDeps } from "./operator";
+import { realInvestigateReads } from "./investigate-reads";
 
 // Photon S1 bot: official Chat SDK + iMessage adapter in Spectrum Cloud mode.
 // The adapter verifies Spectrum webhook signatures (IMESSAGE_WEBHOOK_SECRET)
@@ -205,6 +206,7 @@ function realDeps(): OperatorDeps {
     post: async () => {
       throw new Error("post is bound per-message");
     },
+    investigate: realInvestigateReads(),
   };
 }
 

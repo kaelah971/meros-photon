@@ -4,6 +4,8 @@
 // Production wiring lives in lib/photon/bot.ts (real deps) and the only
 // side effects are: persist history rows + post ONE reply via the adapter.
 
+import type { InvestigateReads } from "./investigate";
+
 export type StatsSnapshot = {
   openIssues: number;
   customers: number;
@@ -63,6 +65,12 @@ export type OperatorDeps = {
     bindingId: string | null,
   ) => Promise<void>;
   post: (text: string) => Promise<{ providerId?: string | null }>;
+  /**
+   * S15C read-only investigation surface. Optional so older callers keep
+   * working: when absent, investigation commands reply unavailable.
+   * Production always provides it (see bot.ts realDeps).
+   */
+  investigate?: InvestigateReads;
 };
 
 export type OperatorInput = {
@@ -84,7 +92,17 @@ export type OperatorResult =
   | { action: "denied"; replyText: string }
   | { action: "unknown-workspace"; replyText: string }
   | { action: "choose-workspace"; replyText: string }
-  | { action: "degraded"; replyText: string };
+  | { action: "degraded"; replyText: string }
+  | { action: "help"; replyText: string }
+  | { action: "incidents"; replyText: string }
+  | { action: "alerts"; replyText: string }
+  | { action: "show"; replyText: string }
+  | { action: "investigate"; replyText: string }
+  | { action: "evidence"; replyText: string }
+  | { action: "matches"; replyText: string }
+  | { action: "decisions"; replyText: string }
+  | { action: "clarify"; replyText: string }
+  | { action: "unavailable"; replyText: string };
 
 const STATS_RE = /^\s*stats(?:\s+([A-Za-z0-9-]{2,32}))?\s*$/i;
 const PAIR_RE = /^\s*pair\s+([A-Za-z0-9-]{4,32})\s*$/i;
@@ -128,8 +146,8 @@ export const PAIRING_REQUIRED_TEXT =
   `No workspace data is shown until pairing succeeds.`;
 
 export const USAGE_TEXT =
-  `Meros S1 proof supports one command for now: \`stats\` (your workspace) ` +
-  `or \`stats <workspace-slug>\`.`;
+  `Meros commands: \`incidents\` \`alerts\` \`show me\` \`investigate <ref>\` ` +
+  `\`evidence <ref>\` \`matches <ref>\` \`decisions\` \`stats\` — or \`help\`.`;
 
 export const PAIR_FAILED_TEXT =
   `Meros: that pairing code didn't match (it may have expired or was already used). ` +
@@ -141,6 +159,10 @@ export const DENIED_TEXT =
 
 export const DEGRADED_TEXT =
   `Meros Photon is temporarily unavailable (workspace state unreachable). ` +
+  `Nothing was recorded — please resend shortly; retries are deduped.`;
+
+export const INVESTIGATE_UNAVAILABLE_TEXT =
+  `Investigation commands are unavailable right now (workspace state unreachable). ` +
   `Nothing was recorded — please resend shortly; retries are deduped.`;
 
 /**
@@ -267,6 +289,11 @@ export async function handleOperatorMessage(
 
   const stats = parseStatsIntent(text);
   if (!stats) {
+    const { parseRouterIntent } = await import("./investigate");
+    const intent = parseRouterIntent(text);
+    if (intent) {
+      return handleInvestigateIntent(deps, ctx, binding, intent);
+    }
     await replyOnce(deps, { ...ctx, workspaceId: binding.workspaceId }, USAGE_TEXT, "rejected");
     return { action: "usage", replyText: USAGE_TEXT };
   }
@@ -335,4 +362,286 @@ export async function handleOperatorMessage(
   const replyText = formatStatsReply(displayName, snapshot);
   await replyOnce(deps, { ...ctx, workspaceId, bindingId: binding.id }, replyText, "replied");
   return { action: "stats", replyText };
+}
+
+/**
+ * S15C read-only investigation dispatch. Investigation always runs in the
+ * BINDING's workspace (paired context) with a staff re-check — unknown or
+ * revoked operators never reach the read models. Every branch answers from
+ * persisted records with links; failures return an honest unavailable
+ * notice without claiming a slot, so a redelivery can retry the read.
+ */
+async function handleInvestigateIntent(
+  deps: OperatorDeps,
+  ctx: { inboundId: string; workspaceId: string | null; bindingId: string | null; threadId: string | null },
+  binding: OperatorBinding,
+  intent: import("./investigate").RouterIntent,
+): Promise<OperatorResult> {
+  const reads = deps.investigate;
+  if (!reads) {
+    return { action: "unavailable", replyText: INVESTIGATE_UNAVAILABLE_TEXT };
+  }
+  try {
+    await deps.checkStaff(binding.operatorUserId, binding.workspaceId);
+  } catch {
+    await replyOnce(deps, { ...ctx, workspaceId: binding.workspaceId }, DENIED_TEXT, "rejected");
+    return { action: "denied", replyText: DENIED_TEXT };
+  }
+  const ws = binding.workspaceId;
+  const linkCtx = { ...ctx, workspaceId: ws, bindingId: binding.id };
+  const slug = await reads.workspaceSlug(ws).catch(() => null);
+  if (!slug) return { action: "unavailable", replyText: INVESTIGATE_UNAVAILABLE_TEXT };
+  try {
+    const inv = await import("./investigate");
+    switch (intent.kind) {
+      case "help": {
+        const replyText = inv.helpText();
+        await replyOnce(deps, linkCtx, replyText, "replied");
+        return { action: "help", replyText };
+      }
+      case "incidents": {
+        const rows = await reads.listActiveIncidents(ws);
+        const replyText = inv.incidentsReply(slug, rows);
+        await replyOnce(deps, linkCtx, replyText, "replied");
+        return { action: "incidents", replyText };
+      }
+      case "alerts": {
+        const rows = await reads.listReviewCandidates(ws);
+        const replyText = inv.alertsReply(slug, rows);
+        await replyOnce(deps, linkCtx, replyText, "replied");
+        return { action: "alerts", replyText };
+      }
+      case "show":
+        return showMe(deps, linkCtx, ws, slug, reads, binding.operatorUserId);
+      case "investigate":
+        return investigateRef(deps, linkCtx, ws, slug, reads, intent.ref);
+      case "evidence":
+        return evidenceRef(deps, linkCtx, ws, slug, reads, intent.ref);
+      case "matches":
+        return matchesRef(deps, linkCtx, ws, slug, reads, intent.ref);
+      case "decisions": {
+        const items = await reads.listDecisions(ws);
+        const replyText = inv.decisionsReply(slug, items);
+        await replyOnce(deps, linkCtx, replyText, "replied");
+        return { action: "decisions", replyText };
+      }
+    }
+  } catch (e) {
+    if (e instanceof Error && e.message === "photon send failed") throw e;
+    return { action: "unavailable", replyText: INVESTIGATE_UNAVAILABLE_TEXT };
+  }
+}
+
+type LinkCtx = { inboundId: string; workspaceId: string | null; bindingId: string | null; threadId: string | null };
+
+async function showMe(
+  deps: OperatorDeps,
+  ctx: LinkCtx,
+  ws: string,
+  slug: string,
+  reads: import("./investigate").InvestigateReads,
+  operatorUserId: string,
+): Promise<OperatorResult> {
+  const inv = await import("./investigate");
+  const alerts = await reads.recentRadarAlerts(ws, operatorUserId);
+  if (alerts.length === 0) {
+    const replyText = "No Radar alert in the last 24 hours for this workspace. Reply `alerts` to see reviewable candidates.";
+    await replyOnce(deps, ctx, replyText, "replied");
+    return { action: "show", replyText };
+  }
+  const seen = new Set<string>();
+  const live: { candidateId: string }[] = [];
+  for (const a of alerts) {
+    if (seen.has(a.candidateId)) continue;
+    seen.add(a.candidateId);
+    const c = await reads.getCandidate(a.candidateId, ws).catch(() => null);
+    if (c) live.push({ candidateId: a.candidateId });
+  }
+  if (live.length === 0) {
+    const replyText = "Your recent alert's candidate is no longer available. Reply `alerts` to see reviewable candidates.";
+    await replyOnce(deps, ctx, replyText, "replied");
+    return { action: "show", replyText };
+  }
+  if (live.length > 1) {
+    const options: { kind: "candidate" | "incident"; id: string; title: string }[] = [];
+    for (const l of live.slice(0, 5)) {
+      const c = await reads.getCandidate(l.candidateId, ws).catch(() => null);
+      if (c) options.push({ kind: "candidate", id: c.id, title: c.title });
+    }
+    const replyText = inv.ambiguousReply("your recent alerts", options);
+    await replyOnce(deps, ctx, replyText, "replied");
+    return { action: "clarify", replyText };
+  }
+  const c = await reads.getCandidate(live[0].candidateId, ws);
+  if (!c) {
+    const replyText = "Your recent alert's candidate is no longer available. Reply `alerts` to see reviewable candidates.";
+    await replyOnce(deps, ctx, replyText, "replied");
+    return { action: "show", replyText };
+  }
+  if (c.status === "accepted" && c.acceptedIncidentId) {
+    const replyText = [
+      `That alert was accepted \u2014 now incident: ${c.title.slice(0, 100)}`,
+      `Open: ${inv.incidentLink(slug, c.acceptedIncidentId)}`,
+    ].join("\n");
+    await replyOnce(deps, ctx, replyText, "replied");
+    return { action: "show", replyText };
+  }
+  if (c.status === "dismissed") {
+    const replyText = [
+      `That alert was dismissed by staff review \u2014 no incident was opened.`,
+      `Candidates: ${inv.candidateLink(slug, c.id)}`,
+    ].join("\n");
+    await replyOnce(deps, ctx, replyText, "replied");
+    return { action: "show", replyText };
+  }
+  const replyText = inv.candidateSummaryReply(slug, c, true);
+  await replyOnce(deps, ctx, replyText, "replied");
+  return { action: "show", replyText };
+}
+
+async function resolveForRef(
+  reads: import("./investigate").InvestigateReads,
+  ws: string,
+  ref: string,
+): Promise<import("./investigate").RefTarget> {
+  const inv = await import("./investigate");
+  if (/^[0-9a-f-]{36}$/i.test(ref.trim())) {
+    const [c, i] = await Promise.all([
+      reads.getCandidate(ref.trim(), ws).catch(() => null),
+      reads.getIncident(ref.trim(), ws).catch(() => null),
+    ]);
+    if (c) return { kind: "candidate", id: c.id, title: c.title };
+    if (i) return { kind: "incident", id: i.id, title: i.title };
+    return { kind: "unknown" };
+  }
+  const [cands, incs] = await Promise.all([reads.listReviewCandidates(ws), reads.listActiveIncidents(ws)]);
+  return inv.resolveReference(
+    ref,
+    cands.map((c) => ({ id: c.id, title: c.title })),
+    incs.map((i) => ({ id: i.id, title: i.title })),
+  );
+}
+
+async function investigateRef(
+  deps: OperatorDeps,
+  ctx: LinkCtx,
+  ws: string,
+  slug: string,
+  reads: import("./investigate").InvestigateReads,
+  ref: string,
+): Promise<OperatorResult> {
+  const inv = await import("./investigate");
+  const target = await resolveForRef(reads, ws, ref);
+  if (target.kind === "unknown") {
+    const replyText = inv.unknownRefReply(ref);
+    await replyOnce(deps, ctx, replyText, "replied");
+    return { action: "clarify", replyText };
+  }
+  if (target.kind === "ambiguous") {
+    const replyText = inv.ambiguousReply(ref, target.options);
+    await replyOnce(deps, ctx, replyText, "replied");
+    return { action: "clarify", replyText };
+  }
+  if (target.kind === "candidate") {
+    const c = await reads.getCandidate(target.id, ws).catch(() => null);
+    if (!c) {
+      const replyText = inv.unknownRefReply(ref);
+      await replyOnce(deps, ctx, replyText, "replied");
+      return { action: "clarify", replyText };
+    }
+    if (c.status === "accepted" && c.acceptedIncidentId) {
+      const replyText = [
+        `Candidate accepted \u2014 now incident: ${c.title.slice(0, 100)}`,
+        `Open: ${inv.incidentLink(slug, c.acceptedIncidentId)}`,
+      ].join("\n");
+      await replyOnce(deps, ctx, replyText, "replied");
+      return { action: "investigate", replyText };
+    }
+    if (c.status === "dismissed") {
+      const replyText = `Candidate dismissed by staff review \u2014 no incident was opened.`;
+      await replyOnce(deps, ctx, replyText, "replied");
+      return { action: "investigate", replyText };
+    }
+    const replyText = inv.candidateSummaryReply(slug, c, false);
+    await replyOnce(deps, ctx, replyText, "replied");
+    return { action: "investigate", replyText };
+  }
+  const i = await reads.getIncident(target.id, ws).catch(() => null);
+  if (!i) {
+    const replyText = inv.unknownRefReply(ref);
+    await replyOnce(deps, ctx, replyText, "replied");
+    return { action: "clarify", replyText };
+  }
+  const [brief, matches] = await Promise.all([
+    reads.getBrief(i.id, ws).catch(() => null),
+    reads.getMatches(i.id, ws).catch(() => ({ current: false, fingerprint: null as string | null, rows: [] })),
+  ]);
+  const replyText = inv.incidentSummaryReply(slug, i, brief, matches.rows.length);
+  await replyOnce(deps, ctx, replyText, "replied");
+  return { action: "investigate", replyText };
+}
+
+async function evidenceRef(
+  deps: OperatorDeps,
+  ctx: LinkCtx,
+  ws: string,
+  slug: string,
+  reads: import("./investigate").InvestigateReads,
+  ref: string,
+): Promise<OperatorResult> {
+  const inv = await import("./investigate");
+  const target = await resolveForRef(reads, ws, ref);
+  if (target.kind !== "incident") {
+    const replyText =
+      target.kind === "ambiguous"
+        ? inv.ambiguousReply(ref, target.options)
+        : `Evidence briefs cover confirmed incidents \u2014 "${ref.slice(0, 32)}" is ${target.kind === "candidate" ? "a candidate (UNCONFIRMED)" : "unknown here"}. Reply \`investigate ${ref.slice(0, 32)}\` for the candidate, or use an incident reference.`;
+    await replyOnce(deps, ctx, replyText, "replied");
+    return { action: "clarify", replyText };
+  }
+  const [i, brief] = await Promise.all([
+    reads.getIncident(target.id, ws).catch(() => null),
+    reads.getBrief(target.id, ws).catch(() => null),
+  ]);
+  if (!i) {
+    const replyText = inv.unknownRefReply(ref);
+    await replyOnce(deps, ctx, replyText, "replied");
+    return { action: "clarify", replyText };
+  }
+  const replyText = inv.evidenceReply(slug, i.id, i.title, brief);
+  await replyOnce(deps, ctx, replyText, "replied");
+  return { action: "evidence", replyText };
+}
+
+async function matchesRef(
+  deps: OperatorDeps,
+  ctx: LinkCtx,
+  ws: string,
+  slug: string,
+  reads: import("./investigate").InvestigateReads,
+  ref: string,
+): Promise<OperatorResult> {
+  const inv = await import("./investigate");
+  const target = await resolveForRef(reads, ws, ref);
+  if (target.kind !== "incident") {
+    const replyText =
+      target.kind === "ambiguous"
+        ? inv.ambiguousReply(ref, target.options)
+        : `Historical matches attach to confirmed incidents \u2014 "${ref.slice(0, 32)}" is ${target.kind === "candidate" ? "a candidate (UNCONFIRMED)" : "unknown here"}. Reply \`investigate ${ref.slice(0, 32)}\` for the candidate, or use an incident reference.`;
+    await replyOnce(deps, ctx, replyText, "replied");
+    return { action: "clarify", replyText };
+  }
+  const [i, m] = await Promise.all([
+    reads.getIncident(target.id, ws).catch(() => null),
+    reads.getMatches(target.id, ws).catch(() => ({ current: false, fingerprint: null as string | null, rows: [] as never[] })),
+  ]);
+  if (!i) {
+    const replyText = inv.unknownRefReply(ref);
+    await replyOnce(deps, ctx, replyText, "replied");
+    return { action: "clarify", replyText };
+  }
+  const rows = m.rows ?? [];
+  const replyText = inv.matchesReply(slug, i.id, i.title, m.current, m.fingerprint, rows);
+  await replyOnce(deps, ctx, replyText, "replied");
+  return { action: "matches", replyText };
 }

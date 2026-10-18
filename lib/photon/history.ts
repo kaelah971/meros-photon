@@ -238,3 +238,56 @@ export async function listOperatorHistory(input: {
     order by created_at desc, id desc limit ${limit}
   `) as unknown as PhotonMessageRow[];
 }
+
+export type RadarAlertRecord = {
+  outboundId: string;
+  candidateId: string;
+  operatorUserId: string;
+  threadId: string | null;
+  createdAt: string;
+};
+
+const RADAR_KEY_RE = /^radar:([0-9a-f-]{36}):(.+)$/i;
+
+/**
+ * S15C "show me" context: recent ACCEPTED Radar alerts for one operator in
+ * one workspace, newest first. The candidate id is parsed from the
+ * idempotency key (`radar:{candidateId}:{operatorUserId}`) recorded at
+ * send time — never inferred from message text. Only `sent` rows count;
+ * failed or suppressed sends are not valid alert context. Bounded.
+ */
+export async function listRecentRadarAlerts(input: {
+  workspaceId: string;
+  operatorUserId: string;
+  sinceHours?: number;
+  limit?: number;
+}): Promise<RadarAlertRecord[]> {
+  const sql = await requireSql();
+  const hours = Math.min(Math.max(input.sinceHours ?? 24, 1), 168);
+  const limit = Math.min(Math.max(input.limit ?? 5, 1), 20);
+  const rows = (await sql`
+    select id, thread_id, idempotency_key, created_at
+    from photon_messages
+    where workspace_id = ${input.workspaceId}
+      and direction = 'outbound'
+      and status = 'sent'
+      and idempotency_key like 'radar:%'
+      and created_at > now() - (${hours} || ' hours')::interval
+    order by created_at desc, id desc limit ${limit * 5}
+  `) as unknown as { id: string; thread_id: string | null; idempotency_key: string | null; created_at: string }[];
+  const out: RadarAlertRecord[] = [];
+  for (const r of rows) {
+    const m = r.idempotency_key ? RADAR_KEY_RE.exec(r.idempotency_key) : null;
+    if (!m) continue; // malformed key: never guess, skip honestly
+    if (m[2] !== input.operatorUserId) continue; // per-operator keys never cross
+    out.push({
+      outboundId: r.id,
+      candidateId: m[1],
+      operatorUserId: m[2],
+      threadId: r.thread_id,
+      createdAt: r.created_at,
+    });
+    if (out.length >= limit) break;
+  }
+  return out;
+}

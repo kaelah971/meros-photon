@@ -5,6 +5,7 @@
 // side effects are: persist history rows + post ONE reply via the adapter.
 
 import type { InvestigateReads } from "./investigate";
+import type { ConversePlan, ConverseTurn, PhraseInput } from "./converse";
 
 export type StatsSnapshot = {
   openIssues: number;
@@ -71,6 +72,12 @@ export type OperatorDeps = {
    * Production always provides it (see bot.ts realDeps).
    */
   investigate?: InvestigateReads;
+  /**
+   * S15C.1 conversational layer. Optional so older callers keep the exact
+   * legacy usage reply: when absent, unmatched text still gets USAGE_TEXT.
+   * Production always provides it (see bot.ts realDeps).
+   */
+  converse?: ConverseDeps;
 };
 
 export type OperatorInput = {
@@ -89,6 +96,7 @@ export type OperatorResult =
   | { action: "pairing-required"; replyText: string }
   | { action: "pair-failed"; replyText: string }
   | { action: "usage"; replyText: string }
+  | { action: "converse"; replyText: string }
   | { action: "denied"; replyText: string }
   | { action: "unknown-workspace"; replyText: string }
   | { action: "choose-workspace"; replyText: string }
@@ -160,6 +168,12 @@ export const DENIED_TEXT =
 export const DEGRADED_TEXT =
   `Meros Photon is temporarily unavailable (workspace state unreachable). ` +
   `Nothing was recorded — please resend shortly; retries are deduped.`;
+
+export type ConverseDeps = {
+  loadHistory: (workspaceId: string, bindingId: string) => Promise<ConverseTurn[]>;
+  classify: (text: string, history: ConverseTurn[]) => Promise<ConversePlan>;
+  phrase: (input: PhraseInput) => Promise<string>;
+};
 
 export const INVESTIGATE_UNAVAILABLE_TEXT =
   `Investigation commands are unavailable right now (workspace state unreachable). ` +
@@ -294,8 +308,10 @@ export async function handleOperatorMessage(
     if (intent) {
       return handleInvestigateIntent(deps, ctx, binding, intent);
     }
-    await replyOnce(deps, { ...ctx, workspaceId: binding.workspaceId }, USAGE_TEXT, "rejected");
-    return { action: "usage", replyText: USAGE_TEXT };
+    // S15C.1: natural language falls through to the conversational layer.
+    // Exact commands above are untouched; without converse configured the
+    // legacy usage reply is preserved exactly.
+    return handleConversational(deps, ctx, binding, text);
   }
 
   // Resolve WHICH workspace: explicit slug, or the operator's single
@@ -426,6 +442,82 @@ async function handleInvestigateIntent(
         return { action: "decisions", replyText };
       }
     }
+  } catch (e) {
+    if (e instanceof Error && e.message === "photon send failed") throw e;
+    return { action: "unavailable", replyText: INVESTIGATE_UNAVAILABLE_TEXT };
+  }
+}
+
+/**
+ * S15C.1 conversational fallback for text no exact command matched.
+ * Authorization runs BEFORE any intelligence read: revoked/non-staff
+ * operators are denied with zero workspace data, exactly like the router
+ * path. History, stats, and investigation reads are all scoped to the
+ * binding's workspace; the model only ever phrases verified records and
+ * its output is validated against the read-only allowlist. Read-only:
+ * nothing here mutates, approves, publishes, or closes anything.
+ */
+async function handleConversational(
+  deps: OperatorDeps,
+  ctx: { inboundId: string; workspaceId: string | null; bindingId: string | null; threadId: string | null },
+  binding: OperatorBinding,
+  text: string,
+): Promise<OperatorResult> {
+  const converse = deps.converse;
+  const reads = deps.investigate;
+  if (!converse || !reads) {
+    await replyOnce(deps, { ...ctx, workspaceId: binding.workspaceId }, USAGE_TEXT, "rejected");
+    return { action: "usage", replyText: USAGE_TEXT };
+  }
+  try {
+    await deps.checkStaff(binding.operatorUserId, binding.workspaceId);
+  } catch {
+    await replyOnce(deps, { ...ctx, workspaceId: binding.workspaceId }, DENIED_TEXT, "rejected");
+    return { action: "denied", replyText: DENIED_TEXT };
+  }
+  const ws = binding.workspaceId;
+  const linkCtx = { ...ctx, workspaceId: ws, bindingId: binding.id };
+  const slug = await reads.workspaceSlug(ws).catch(() => null);
+  if (!slug) return { action: "unavailable", replyText: INVESTIGATE_UNAVAILABLE_TEXT };
+  let workspaceName = "your workspace";
+  try {
+    const mine = await deps.listWorkspaces(binding.operatorUserId);
+    workspaceName = mine.find((w) => w.id === ws)?.name ?? workspaceName;
+  } catch {
+    // Display name is best-effort; the reply still sends.
+  }
+  // Bounded recent context scoped to this binding; failure degrades to
+  // no-context rather than failing the turn.
+  let history: ConverseTurn[] = [];
+  try {
+    history = await converse.loadHistory(ws, binding.id);
+  } catch {
+    history = [];
+  }
+  // Stats are best-effort here: status-family turns require them (the
+  // converse layer degrades honestly without), detail turns do not.
+  let stats: StatsSnapshot | null = null;
+  try {
+    stats = await deps.readStats(ws);
+  } catch {
+    stats = null;
+  }
+  try {
+    const { runConversational } = await import("./converse");
+    const { replyText } = await runConversational({
+      text,
+      history,
+      workspaceId: ws,
+      operatorUserId: binding.operatorUserId,
+      workspaceName,
+      slug,
+      stats,
+      reads,
+      classify: converse.classify,
+      phrase: converse.phrase,
+    });
+    await replyOnce(deps, linkCtx, replyText, "replied");
+    return { action: "converse", replyText };
   } catch (e) {
     if (e instanceof Error && e.message === "photon send failed") throw e;
     return { action: "unavailable", replyText: INVESTIGATE_UNAVAILABLE_TEXT };

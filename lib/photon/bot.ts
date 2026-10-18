@@ -207,6 +207,30 @@ function realDeps(): OperatorDeps {
       throw new Error("post is bound per-message");
     },
     investigate: realInvestigateReads(),
+    converse: {
+      loadHistory: async (workspaceId, bindingId) => {
+        const { listOperatorHistory } = await import("./history");
+        // Durable Photon history scoped to this operator binding, oldest
+        // first, bounded and truncated — the only conversation memory.
+        const rows = await listOperatorHistory({ workspaceId, bindingId, limit: 20 }).catch(() => []);
+        return rows
+          .reverse()
+          .slice(-12)
+          .map((r) => ({
+            role: (r.direction === "outbound" ? "assistant" : "user") as "assistant" | "user",
+            text: r.body_text.slice(0, 300),
+          }))
+          .filter((t) => t.text.trim().length > 0);
+      },
+      classify: async (text, history) => {
+        const { defaultClassify } = await import("./converse");
+        return defaultClassify(text, history);
+      },
+      phrase: async (input) => {
+        const { defaultPhrase } = await import("./converse");
+        return defaultPhrase(input);
+      },
+    },
   };
 }
 

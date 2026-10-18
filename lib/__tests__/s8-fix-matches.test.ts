@@ -480,9 +480,9 @@ describe("refresh orchestration (fakes)", () => {
 
   it("concurrent same-fingerprint refreshes run the judge once", async () => {
     const { deps, input, calls } = makeDeps({
-      judge: async (x) => {
+      judge: async () => {
         await new Promise((r) => setTimeout(r, 20));
-        return goodJudge()(x);
+        return goodJudge()();
       },
     });
     const [a, b] = await Promise.all([

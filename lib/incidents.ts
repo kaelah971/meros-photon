@@ -142,7 +142,7 @@ export type IncidentEventRow = {
   created_at: string;
 };
 
-async function recordEvent(input: {
+export async function recordEvent(input: {
   incidentId: string;
   kind: string;
   actorUserId?: string | null;

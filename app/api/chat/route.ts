@@ -378,6 +378,24 @@ export async function POST(req: Request) {
                           await realMatchDeps(),
                         );
                         console.log(`[chat] matches ${incidentId.slice(0, 8)} ${m.action}`);
+                      // S9: fresh evidence + matching context → draft a recovery
+                      // proposal (fingerprint-gated; draft only, never approval).
+                      if (m.action === "built" || m.action === "unchanged") {
+                        try {
+                          const { generatePlanIfNeeded, realPlanDeps } = await import(
+                            "@/lib/recovery-plans"
+                          );
+                          const g = await generatePlanIfNeeded(
+                            incidentId,
+                            detectCtx.workspaceId,
+                            null,
+                            await realPlanDeps(),
+                          );
+                          console.log(`[chat] plan ${incidentId.slice(0, 8)} ${g.action}`);
+                        } catch (e) {
+                          console.log(`[chat] plan draft skipped safely: ${e instanceof Error ? e.message : e}`);
+                        }
+                      }
                       } catch (e) {
                         console.log(`[chat] match refresh skipped safely: ${e instanceof Error ? e.message : e}`);
                       }

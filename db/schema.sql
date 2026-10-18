@@ -557,3 +557,32 @@ create unique index if not exists incident_fix_matches_unique
   on incident_fix_matches (incident_id, brief_fingerprint, ref_id);
 create index if not exists incident_fix_matches_incident_idx
   on incident_fix_matches (incident_id, generated_at desc);
+
+-- Meros S9 recovery plans: staged, human-reviewable proposals. Planning
+-- and review only — NOTHING here executes. One ACTIVE proposal per
+-- (incident, evidence fingerprint) via the partial unique index below;
+-- rejected/superseded rows stay as audit history. Plan states are
+-- independent of the incident lifecycle. Additive + idempotent.
+
+create table if not exists incident_recovery_plans (
+  id uuid primary key default gen_random_uuid(),
+  incident_id uuid not null references incidents(id) on delete cascade,
+  workspace_id text not null references workspaces(id) on delete cascade,
+  plan_version integer not null default 1,
+  status text not null default 'draft'
+    check (status in ('draft', 'under_review', 'staged', 'rejected', 'superseded')),
+  brief_fingerprint text not null default '',
+  brief_version integer not null default 1,
+  payload jsonb not null default '{}',
+  created_by_user_id text references "user"(id) on delete set null,
+  reviewed_by_user_id text references "user"(id) on delete set null,
+  reviewed_at timestamptz,
+  review_note text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create unique index if not exists incident_recovery_plans_active_unique
+  on incident_recovery_plans (incident_id, brief_fingerprint)
+  where status in ('draft', 'under_review', 'staged');
+create index if not exists incident_recovery_plans_incident_idx
+  on incident_recovery_plans (incident_id, plan_version desc);

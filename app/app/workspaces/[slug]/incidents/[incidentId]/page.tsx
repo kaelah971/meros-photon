@@ -18,6 +18,7 @@ import IncidentActions from "@/components/incident-actions";
 import EvidenceBrief from "@/components/evidence-brief";
 import IncidentSnapshot from "@/components/incident-snapshot";
 import IncidentFixMatches from "@/components/incident-fix-matches";
+import IncidentRecoveryPlan from "@/components/incident-recovery-plan";
 
 const NEXT: Record<string, string[]> = {
   detected: ["investigating", "dismissed"],
@@ -205,6 +206,8 @@ export default async function IncidentDetail({
       />
 
       <IncidentFixMatches workspaceSlug={slug} workspaceId={ws.id} incidentId={incident.id} />
+
+      <IncidentRecoveryPlan workspaceSlug={slug} workspaceId={ws.id} incidentId={incident.id} />
 
       <h2 className="mt-4 text-xs font-medium text-neutral-100">
         Activity ({events.length})

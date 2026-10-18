@@ -586,3 +586,65 @@ create unique index if not exists incident_recovery_plans_active_unique
   where status in ('draft', 'under_review', 'staged');
 create index if not exists incident_recovery_plans_incident_idx
   on incident_recovery_plans (incident_id, plan_version desc);
+
+-- Meros S10 approval + execution control plane. Approvals authorize an
+-- EXACT staged scope (plan version + fingerprint + steps + params); any
+-- drift invalidates. Only `manual_external_record` is a supported action
+-- type — Meros runs no automatic provider-backed recovery. Execution rows
+-- are claimed durably on idempotency keys before any manual work is
+-- recorded; unknown_outcome stays until an independent verifier confirms.
+-- Additive + idempotent. No incident lifecycle coupling.
+
+create table if not exists incident_plan_approvals (
+  id uuid primary key default gen_random_uuid(),
+  plan_id uuid not null references incident_recovery_plans(id) on delete cascade,
+  incident_id uuid not null references incidents(id) on delete cascade,
+  workspace_id text not null references workspaces(id) on delete cascade,
+  plan_version integer not null default 1,
+  brief_fingerprint text not null default '',
+  scope_hash text not null default '',
+  scope jsonb not null default '{}',
+  status text not null default 'requested'
+    check (status in ('requested', 'approved', 'rejected', 'revoked', 'expired', 'invalidated')),
+  risk_ack boolean not null default false,
+  high_impact boolean not null default false,
+  requested_by_user_id text references "user"(id) on delete set null,
+  decided_by_user_id text references "user"(id) on delete set null,
+  expires_at timestamptz,
+  decided_at timestamptz,
+  note text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create unique index if not exists incident_plan_approvals_active_unique
+  on incident_plan_approvals (plan_id)
+  where status in ('requested', 'approved');
+create index if not exists incident_plan_approvals_plan_idx
+  on incident_plan_approvals (plan_id, created_at desc);
+
+create table if not exists incident_action_executions (
+  id uuid primary key default gen_random_uuid(),
+  incident_id uuid not null references incidents(id) on delete cascade,
+  workspace_id text not null references workspaces(id) on delete cascade,
+  plan_id uuid not null references incident_recovery_plans(id) on delete cascade,
+  approval_id uuid not null references incident_plan_approvals(id) on delete cascade,
+  action_type text not null default 'manual_external_record'
+    check (action_type in ('manual_external_record')),
+  params jsonb not null default '{}',
+  idempotency_key text not null default '',
+  status text not null default 'unknown_outcome'
+    check (status in ('pending', 'in_progress', 'provider_accepted', 'verified_success', 'verified_failure', 'unknown_outcome')),
+  actor_user_id text references "user"(id) on delete set null,
+  verifier_user_id text references "user"(id) on delete set null,
+  provider_ref text,
+  result_note text,
+  verification_evidence text,
+  started_at timestamptz,
+  completed_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create unique index if not exists incident_action_executions_idem_unique
+  on incident_action_executions (workspace_id, idempotency_key);
+create index if not exists incident_action_executions_plan_idx
+  on incident_action_executions (plan_id, created_at desc);

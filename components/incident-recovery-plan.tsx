@@ -1,6 +1,7 @@
 import { getIncidentBrief } from "@/lib/evidence-brief";
 import { realPlanStore, type PlanRow } from "@/lib/recovery-plans";
 import RecoveryPlanActions from "@/components/recovery-plan-actions";
+import RecoveryApprovalSection from "@/components/recovery-approval-section";
 
 function statusLabel(status: PlanRow["status"]): { text: string; cls: string } {
   switch (status) {
@@ -266,6 +267,18 @@ function PlanCard({
       {plan.review_note && (
         <p className="mt-1 text-[11px] text-neutral-500">Review note: {plan.review_note}</p>
       )}
+
+      <RecoveryApprovalSection
+        workspaceSlug={workspaceSlug}
+        workspaceId={plan.workspace_id}
+        incidentId={incidentId}
+        planId={plan.id}
+        planStatus={plan.status}
+        planVersion={plan.plan_version}
+        briefFingerprint={plan.brief_fingerprint}
+        stepCount={plan.payload.steps.length}
+        fresh={fresh}
+      />
     </div>
   );
 }

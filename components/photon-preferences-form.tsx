@@ -8,6 +8,7 @@ export type PrefsView = {
   quietStart: string;
   quietEnd: string;
   timezone: string;
+  radarEnabled: boolean;
 };
 
 const TIMEZONES = [
@@ -78,6 +79,26 @@ export default function PhotonPreferencesForm({
   return (
     <div className="mt-3 border-t border-[rgba(119,255,117,0.12)] pt-2.5">
       <p className="text-xs text-neutral-100">Notification preferences</p>
+      <div className="mt-1 rounded-md border border-[rgba(255,255,255,0.12)] bg-black/20 px-2 py-1.5">
+        <div className={row}>
+          <span>
+            Automatic Incident Radar
+            <span className="block text-[10px] text-neutral-500">
+              Possible-issue iMessage when 3+ customers report the same problem within 60 minutes. Review
+              only — never customer sends, fixes, or closures. Honors quiet hours.
+            </span>
+          </span>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={form.radarEnabled}
+            onClick={() => setForm((f) => ({ ...f, radarEnabled: !f.radarEnabled }))}
+            className={`${toggle} ${form.radarEnabled ? "bg-[#2f9e44]" : "bg-neutral-600"}`}
+          >
+            <span className={knob(form.radarEnabled)} />
+          </button>
+        </div>
+      </div>
       <div className="mt-1.5 space-y-2 text-[11px] text-neutral-400">
         <div className={row}>
           <span>Proactive notifications</span>

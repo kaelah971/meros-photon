@@ -340,6 +340,23 @@ export async function POST(req: Request) {
                   store: await import("@/lib/issue-candidates"),
                 });
                 console.log(`[chat] detection ${outcome.action}` + ("candidateId" in outcome ? ` candidate=${outcome.candidateId}` : ""));
+                // S15B Incident Radar: genuine new candidate membership →
+                // evaluate the 3-customer/60-minute rule and alert ONLY
+                // explicitly opted-in operators. Fully isolated: never
+                // delays, breaks, or reclassifies anything in this chain.
+                if (outcome.action === "joined" && outcome.newConversation) {
+                  try {
+                    const { maybeSendRadarAlert, realRadarDeps } = await import("@/lib/radar");
+                    const radar = await maybeSendRadarAlert(
+                      detectCtx.workspaceId,
+                      outcome.candidateId,
+                      await realRadarDeps(),
+                    );
+                    console.log(`[chat] radar ${outcome.candidateId.slice(0, 8)} ${radar.action}`);
+                  } catch (e) {
+                    console.log(`[chat] radar skipped safely: ${e instanceof Error ? e.message : e}`);
+                  }
+                }
               } catch (e) {
                 console.log(`[chat] detection failed safely: ${e instanceof Error ? e.message : e}`);
               }

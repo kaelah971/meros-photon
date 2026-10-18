@@ -339,6 +339,14 @@ create table if not exists operator_preferences (
   primary key (workspace_id, operator_user_id)
 );
 
+alter table if exists operator_preferences
+  add column if not exists radar_enabled boolean not null default false;
+
+-- S15B Automatic Incident Radar: per-operator explicit opt-in for
+-- possible-incident iMessage alerts. Default FALSE (missing row or false
+-- means OFF). Independent of proactive_enabled and quiet-hours gates,
+-- which always apply on top. Additive + idempotent.
+
 -- Meros S4 Incident Center: first-class durable incidents.
 -- incidents own nothing but themselves: customers, conversations, fix
 -- cards, and knowledge rows stay canonical in their own tables and are

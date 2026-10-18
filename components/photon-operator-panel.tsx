@@ -48,6 +48,7 @@ export default async function PhotonOperatorPanel({ workspaceSlug }: { workspace
   const paired = binding !== null;
   const threadReady = Boolean(binding?.thread_id);
   const proactiveOn = prefs?.proactiveEnabled !== false;
+  const radarOn = prefs?.radarEnabled === true;
 
   return (
     <section
@@ -81,6 +82,12 @@ export default async function PhotonOperatorPanel({ workspaceSlug }: { workspace
             </dd>
           </div>
         )}
+        <div className="flex justify-between gap-2">
+          <dt>Incident Radar</dt>
+          <dd className="text-neutral-100">
+            {radarOn ? "ON — possible-issue alerts" : "OFF — default, no automatic alerts"}
+          </dd>
+        </div>
         {paired && !threadReady && (
           <p className="text-amber-200/90">
             Connected, but no conversation recorded yet — send `stats` from iMessage once to enable proactive messages.
@@ -101,6 +108,7 @@ export default async function PhotonOperatorPanel({ workspaceSlug }: { workspace
           quietStart: prefs?.quietStart ?? "22:00",
           quietEnd: prefs?.quietEnd ?? "07:00",
           timezone: prefs?.timezone ?? "Africa/Lagos",
+          radarEnabled: prefs?.radarEnabled ?? false,
         }}
       />
       <PhotonTestNotify workspaceSlug={ws.slug} />

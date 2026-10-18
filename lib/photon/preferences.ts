@@ -31,6 +31,8 @@ export type OperatorPreferences = {
   quietStart: string; // HH:MM 24h
   quietEnd: string; // HH:MM 24h
   timezone: string; // IANA
+  /** S15B Incident Radar opt-in. Default FALSE; missing/false/unreadable means OFF. */
+  radarEnabled: boolean;
 };
 
 export const DEFAULT_PREFERENCES: Omit<OperatorPreferences, "workspaceId" | "operatorUserId"> = {
@@ -39,6 +41,7 @@ export const DEFAULT_PREFERENCES: Omit<OperatorPreferences, "workspaceId" | "ope
   quietStart: "22:00",
   quietEnd: "07:00",
   timezone: "Africa/Lagos",
+  radarEnabled: false,
 };
 
 export const TIME_RE = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
@@ -66,12 +69,16 @@ export type PreferencesInput = {
   quietStart: unknown;
   quietEnd: unknown;
   timezone: unknown;
+  /** Optional: absent means "leave unchanged" (PUT merges with stored row). */
+  radarEnabled?: unknown;
 };
 
-/** Validate a PUT body. Returns the clean row or a human error. Pure. */
+/** Validate a PUT body. Returns the clean row or a human error. Pure.
+ * radarEnabled is optional: absent means "leave unchanged" so unrelated
+ * saves never reset the Radar opt-in. Present-but-not-boolean is an error. */
 export function validatePreferences(input: PreferencesInput): {
   ok: true;
-  value: Omit<OperatorPreferences, "workspaceId" | "operatorUserId">;
+  value: Omit<OperatorPreferences, "workspaceId" | "operatorUserId" | "radarEnabled"> & { radarEnabled: boolean | null };
 } | { ok: false; error: string } {
   if (typeof input.proactiveEnabled !== "boolean") {
     return { ok: false, error: "proactiveEnabled must be a boolean" };
@@ -91,6 +98,9 @@ export function validatePreferences(input: PreferencesInput): {
   if (!isValidTimezone(input.timezone)) {
     return { ok: false, error: "timezone must be a valid IANA timezone" };
   }
+  if (input.radarEnabled !== undefined && typeof input.radarEnabled !== "boolean") {
+    return { ok: false, error: "radarEnabled must be a boolean" };
+  }
   return {
     ok: true,
     value: {
@@ -99,6 +109,7 @@ export function validatePreferences(input: PreferencesInput): {
       quietStart: input.quietStart,
       quietEnd: input.quietEnd,
       timezone: input.timezone,
+      radarEnabled: typeof input.radarEnabled === "boolean" ? input.radarEnabled : null,
     },
   };
 }
@@ -174,7 +185,7 @@ export async function loadPreferences(
 ): Promise<StoredPreferencesState> {
   const sql = await requireSql();
   const rows = (await sql`
-    select proactive_enabled, quiet_hours_enabled, quiet_start, quiet_end, timezone
+    select proactive_enabled, quiet_hours_enabled, quiet_start, quiet_end, timezone, radar_enabled
     from operator_preferences
     where workspace_id = ${workspaceId} and operator_user_id = ${operatorUserId}
     limit 1
@@ -184,6 +195,7 @@ export async function loadPreferences(
     quiet_start: unknown;
     quiet_end: unknown;
     timezone: unknown;
+    radar_enabled: unknown;
   }[];
   const r = rows[0];
   if (!r) return { present: false };
@@ -195,6 +207,7 @@ export async function loadPreferences(
     quietStart: typeof r.quiet_start === "string" ? r.quiet_start : "",
     quietEnd: typeof r.quiet_end === "string" ? r.quiet_end : "",
     timezone: typeof r.timezone === "string" ? r.timezone : "",
+    radarEnabled: r.radar_enabled === true,
   };
   const valid =
     r.proactive_enabled === prefs.proactiveEnabled &&
@@ -249,23 +262,25 @@ export async function upsertPreferences(input: OperatorPreferences): Promise<Ope
   const sql = await requireSql();
   const rows = (await sql`
     insert into operator_preferences
-      (workspace_id, operator_user_id, proactive_enabled, quiet_hours_enabled, quiet_start, quiet_end, timezone, updated_at)
+      (workspace_id, operator_user_id, proactive_enabled, quiet_hours_enabled, quiet_start, quiet_end, timezone, radar_enabled, updated_at)
     values (${input.workspaceId}, ${input.operatorUserId}, ${input.proactiveEnabled},
-            ${input.quietHoursEnabled}, ${input.quietStart}, ${input.quietEnd}, ${input.timezone}, now())
+            ${input.quietHoursEnabled}, ${input.quietStart}, ${input.quietEnd}, ${input.timezone}, ${input.radarEnabled}, now())
     on conflict (workspace_id, operator_user_id) do update set
       proactive_enabled = excluded.proactive_enabled,
       quiet_hours_enabled = excluded.quiet_hours_enabled,
       quiet_start = excluded.quiet_start,
       quiet_end = excluded.quiet_end,
       timezone = excluded.timezone,
+      radar_enabled = excluded.radar_enabled,
       updated_at = now()
-    returning proactive_enabled, quiet_hours_enabled, quiet_start, quiet_end, timezone
+    returning proactive_enabled, quiet_hours_enabled, quiet_start, quiet_end, timezone, radar_enabled
   `) as unknown as {
     proactive_enabled: boolean;
     quiet_hours_enabled: boolean;
     quiet_start: string;
     quiet_end: string;
     timezone: string;
+    radar_enabled: boolean;
   }[];
   const r = rows[0];
   if (!r) throw new Error("preferences upsert failed");
@@ -277,5 +292,50 @@ export async function upsertPreferences(input: OperatorPreferences): Promise<Ope
     quietStart: r.quiet_start,
     quietEnd: r.quiet_end,
     timezone: r.timezone,
+    radarEnabled: r.radar_enabled === true,
   };
+}
+
+/**
+ * S15B Incident Radar opt-in. TRUE only when a row explicitly stores true.
+ * Missing row, false, unreadable state, or pre-migration schema (no
+ * column) all mean OFF — never guessed on. Callers treat OFF as "no
+ * automatic alerts for this operator".
+ */
+export async function isRadarEnabled(
+  workspaceId: string,
+  operatorUserId: string,
+): Promise<boolean> {
+  try {
+    const sql = await requireSql();
+    const rows = (await sql`
+      select radar_enabled from operator_preferences
+      where workspace_id = ${workspaceId} and operator_user_id = ${operatorUserId}
+      limit 1
+    `) as unknown as { radar_enabled: unknown }[];
+    return rows[0]?.radar_enabled === true;
+  } catch {
+    // Unreadable state (including a schema without the column) fails OFF.
+    return false;
+  }
+}
+
+/**
+ * Operators who explicitly opted into Incident Radar in one workspace.
+ * Used for recipient selection; each operator is still gated on binding,
+ * staff access, preferences, and quiet hours before any send.
+ */
+export async function listRadarOptedIn(workspaceId: string): Promise<string[]> {
+  try {
+    const sql = await requireSql();
+    const rows = (await sql`
+      select operator_user_id from operator_preferences
+      where workspace_id = ${workspaceId} and radar_enabled = true
+      order by updated_at desc limit 25
+    `) as unknown as { operator_user_id: string }[];
+    return [...new Set(rows.map((r) => r.operator_user_id).filter((id) => typeof id === "string" && id))];
+  } catch {
+    // Unreadable state means no recipients — fail closed, never broadcast.
+    return [];
+  }
 }

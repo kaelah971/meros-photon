@@ -77,8 +77,26 @@ describe("preference validation", () => {
         quietStart: "22:00",
         quietEnd: "07:00",
         timezone: "Africa/Lagos",
+        radarEnabled: null,
       },
     });
+  });
+
+  it("passes radarEnabled through when present, rejects non-booleans", () => {
+    const base = {
+      proactiveEnabled: true,
+      quietHoursEnabled: false,
+      quietStart: "22:00",
+      quietEnd: "07:00",
+      timezone: "Africa/Lagos",
+    };
+    expect(validatePreferences({ ...base, radarEnabled: true })).toEqual({
+      ok: true,
+      value: { ...base, radarEnabled: true },
+    });
+    expect(validatePreferences({ ...base, radarEnabled: false }).ok).toBe(true);
+    expect(validatePreferences({ ...base, radarEnabled: "yes" }).ok).toBe(false);
+    expect(validatePreferences({ ...base, radarEnabled: 1 }).ok).toBe(false);
   });
 
   it("rejects non-boolean toggles, bad times, equal window, bad timezone", () => {

@@ -365,6 +365,23 @@ export async function POST(req: Request) {
                       judge: geminiBriefJudge(),
                     });
                     console.log(`[chat] brief ${incidentId.slice(0, 8)} ${r.action}`);
+                    // S8: brief rebuilt from new evidence → refresh fix-card
+                    // matches (fingerprint-gated; no-op when unchanged).
+                    if (r.action === "built") {
+                      try {
+                        const { refreshMatchesIfNeeded, realMatchDeps } = await import(
+                          "@/lib/fix-matches"
+                        );
+                        const m = await refreshMatchesIfNeeded(
+                          incidentId,
+                          detectCtx.workspaceId,
+                          await realMatchDeps(),
+                        );
+                        console.log(`[chat] matches ${incidentId.slice(0, 8)} ${m.action}`);
+                      } catch (e) {
+                        console.log(`[chat] match refresh skipped safely: ${e instanceof Error ? e.message : e}`);
+                      }
+                    }
                   }
                 }
               }

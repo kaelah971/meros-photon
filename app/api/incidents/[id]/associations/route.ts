@@ -8,6 +8,7 @@ import {
   type EvidenceInput,
 } from "@/lib/incidents";
 import { scheduleBriefRefresh } from "@/lib/evidence-brief";
+import { scheduleMatchRefresh } from "@/lib/fix-matches";
 import { requireStaff } from "@/lib/support-ops";
 
 function statusOf(e: unknown, fallback: number): number {
@@ -52,6 +53,7 @@ export async function POST(
         actorUserId: user.id,
       });
       scheduleBriefRefresh(id, ws.id);
+      scheduleMatchRefresh(id, ws.id);
       return NextResponse.json({ ok: true, linked });
     }
     if (typeof body.customerId === "string" && body.customerId) {

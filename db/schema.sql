@@ -530,3 +530,30 @@ create index if not exists incident_snapshot_deliveries_incident_idx
 -- Standalone ALTER so existing tables gain it. Additive + idempotent.
 alter table if exists operator_preferences
   add column if not exists evidence_auto_notify boolean not null default false;
+
+-- Meros S8 incident fix-card matches: read-only recommendations linking a
+-- confirmed incident's evidence-brief fingerprint to authorized historical
+-- Fix Cards (same workspace only). One row per (incident, fingerprint,
+-- card); a new fingerprint inserts new rows while old rows stay as history.
+-- 'current' = rows matching the brief's present fingerprint; anything else
+-- renders stale. No autonomous action ever reads this table. Additive +
+-- idempotent.
+
+create table if not exists incident_fix_matches (
+  id uuid primary key default gen_random_uuid(),
+  incident_id uuid not null references incidents(id) on delete cascade,
+  workspace_id text not null references workspaces(id) on delete cascade,
+  brief_fingerprint text not null default '',
+  brief_version integer not null default 1,
+  ref_kind text not null default 'fix_card'
+    check (ref_kind in ('fix_card')),
+  ref_id uuid not null references fix_cards(id) on delete cascade,
+  tier text not null
+    check (tier in ('verified_fix', 'documented_unverified', 'possible_match')),
+  payload jsonb not null default '{}',
+  generated_at timestamptz not null default now()
+);
+create unique index if not exists incident_fix_matches_unique
+  on incident_fix_matches (incident_id, brief_fingerprint, ref_id);
+create index if not exists incident_fix_matches_incident_idx
+  on incident_fix_matches (incident_id, generated_at desc);

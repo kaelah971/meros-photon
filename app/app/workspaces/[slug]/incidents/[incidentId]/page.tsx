@@ -17,6 +17,7 @@ import { EmptyState, StatusPill } from "@/components/meros-ui";
 import IncidentActions from "@/components/incident-actions";
 import EvidenceBrief from "@/components/evidence-brief";
 import IncidentSnapshot from "@/components/incident-snapshot";
+import IncidentFixMatches from "@/components/incident-fix-matches";
 
 const NEXT: Record<string, string[]> = {
   detected: ["investigating", "dismissed"],
@@ -202,6 +203,8 @@ export default async function IncidentDetail({
           conversation_count: conversations.length,
         }}
       />
+
+      <IncidentFixMatches workspaceSlug={slug} workspaceId={ws.id} incidentId={incident.id} />
 
       <h2 className="mt-4 text-xs font-medium text-neutral-100">
         Activity ({events.length})

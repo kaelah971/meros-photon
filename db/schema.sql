@@ -648,3 +648,55 @@ create unique index if not exists incident_action_executions_idem_unique
   on incident_action_executions (workspace_id, idempotency_key);
 create index if not exists incident_action_executions_plan_idx
   on incident_action_executions (plan_id, created_at desc);
+
+-- Meros S11 Resolution Watch: durable, evidence-backed tracking of whether
+-- the customer problem improved, persisted, or returned after a recorded
+-- S10 intervention. Action verification is never resolution: confirmed
+-- status needs supporting customer evidence plus authorized verification.
+-- Observations are append-only with per-message dedupe; history survives
+-- evidence drift. Additive + idempotent. No incident lifecycle coupling.
+
+create table if not exists incident_resolution_watches (
+  id uuid primary key default gen_random_uuid(),
+  incident_id uuid not null references incidents(id) on delete cascade,
+  workspace_id text not null references workspaces(id) on delete cascade,
+  plan_id uuid references incident_recovery_plans(id) on delete set null,
+  approval_id uuid references incident_plan_approvals(id) on delete set null,
+  execution_id uuid references incident_action_executions(id) on delete set null,
+  baseline_fingerprint text not null default '',
+  baseline_summary text not null default '',
+  baseline_symptoms jsonb not null default '[]',
+  status text not null default 'awaiting_evidence'
+    check (status in ('awaiting_evidence', 'watching', 'improvement_indicated', 'still_affected', 'insufficient_evidence', 'resolution_confirmed')),
+  last_observation_at timestamptz,
+  last_evaluation_at timestamptz,
+  confirmed_by_user_id text references "user"(id) on delete set null,
+  confirmed_at timestamptz,
+  note text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create unique index if not exists incident_resolution_watches_active_unique
+  on incident_resolution_watches (incident_id)
+  where status != 'resolution_confirmed';
+create index if not exists incident_resolution_watches_incident_idx
+  on incident_resolution_watches (incident_id, created_at desc);
+
+create table if not exists incident_watch_observations (
+  id uuid primary key default gen_random_uuid(),
+  watch_id uuid not null references incident_resolution_watches(id) on delete cascade,
+  incident_id uuid not null references incidents(id) on delete cascade,
+  workspace_id text not null references workspaces(id) on delete cascade,
+  kind text not null default 'operator_note'
+    check (kind in ('customer_improvement', 'customer_persistence', 'regression', 'operator_note', 'verification', 'system_note')),
+  message_id uuid references messages(id) on delete set null,
+  conversation_id uuid references conversations(id) on delete set null,
+  excerpt text,
+  created_by_user_id text references "user"(id) on delete set null,
+  created_at timestamptz not null default now()
+);
+create unique index if not exists incident_watch_observations_msg_unique
+  on incident_watch_observations (watch_id, message_id)
+  where message_id is not null;
+create index if not exists incident_watch_observations_watch_idx
+  on incident_watch_observations (watch_id, created_at, id);

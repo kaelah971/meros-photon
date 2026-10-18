@@ -402,6 +402,35 @@ export async function POST(req: Request) {
                     }
                   }
                 }
+                // S11: new report on a linked conversation → note it on
+                // every active Resolution Watch. Deterministic, message-id
+                // deduped, bounded; runs with or without Gemini and never
+                // executes or closes anything.
+                try {
+                  const { noteNewMessage } = await import("@/lib/resolution-watch");
+                  const { realWatchDeps } = await import("@/lib/resolution-watch-store");
+                  const wdeps = await realWatchDeps({ judge: false });
+                  for (const incidentId of linked) {
+                    try {
+                      const n = await noteNewMessage(
+                        incidentId,
+                        detectCtx.workspaceId,
+                        {
+                          id: detectCtx.messageId,
+                          conversationId: detectCtx.conversationId,
+                          excerpt: detectCtx.text.slice(0, 500),
+                          createdAt: new Date().toISOString(),
+                        },
+                        wdeps,
+                      );
+                      console.log(`[chat] watch ${incidentId.slice(0, 8)} ${n.action}+${n.action === "noted" ? n.added : 0}`);
+                    } catch (e) {
+                      console.log(`[chat] watch note skipped safely: ${e instanceof Error ? e.message : e}`);
+                    }
+                  }
+                } catch (e) {
+                  console.log(`[chat] watch note skipped safely: ${e instanceof Error ? e.message : e}`);
+                }
               }
             } catch (e) {
               console.log(`[chat] brief refresh skipped safely: ${e instanceof Error ? e.message : e}`);

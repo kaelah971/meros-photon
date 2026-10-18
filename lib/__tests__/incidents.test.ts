@@ -217,11 +217,31 @@ describe("incident persistence (live Neon)", () => {
     await expect(
       transitionIncident({ incidentId: inc.id, workspaceId: wsId, to: "resolved" }),
     ).rejects.toMatchObject({ status: 409 });
+    // S12: resolving needs a verified closure or an explicit administrative reason.
+    // (From detected the lifecycle gate fires first; the reason check
+    // applies once monitoring is reached.)
     for (const to of ["investigating", "ready_for_action", "recovering", "monitoring"] as const) {
       await transitionIncident({ incidentId: inc.id, workspaceId: wsId, to });
     }
+    await expect(
+      transitionIncident({
+        incidentId: inc.id,
+        workspaceId: wsId,
+        to: "resolved",
+        closure: { mode: "administrative", reason: "" },
+      }),
+    ).rejects.toMatchObject({ status: 400 });
+    await expect(
+      transitionIncident({
+        incidentId: inc.id,
+        workspaceId: wsId,
+        to: "resolved",
+        closure: { mode: "administrative", reason: "   " },
+      }),
+    ).rejects.toMatchObject({ status: 400 });
     const resolved = await transitionIncident({
       incidentId: inc.id, workspaceId: wsId, to: "resolved", resolutionSummary: "Deployed fix, verified",
+      closure: { mode: "administrative", reason: "Duplicate of a tracked outage; verified path not applicable" },
     });
     expect(resolved.status).toBe("resolved");
     expect(resolved.resolution_summary).toContain("Deployed fix");

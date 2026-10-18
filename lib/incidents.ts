@@ -318,6 +318,16 @@ export async function transitionIncident(input: {
   resolutionSummary?: string | null;
   reason?: string | null;
   mergedIntoIncidentId?: string | null;
+  /**
+   * S12 closure gate: resolving an incident requires either a verified
+   * S12 closure (finalized postmortem for current evidence) or an
+   * explicit administrative reason (audited, never claims verified
+   * recovery). Without one, resolved transitions fail closed so the
+   * generic status route cannot bypass closure review.
+   */
+  closure?:
+    | { mode: "verified"; postmortemId: string }
+    | { mode: "administrative"; reason: string };
 }): Promise<IncidentRow> {
   const sql = await requireSql();
   const current = await getIncidentForWorkspace(input.workspaceId, input.incidentId);
@@ -326,6 +336,28 @@ export async function transitionIncident(input: {
     mergedIntoIncidentId: input.mergedIntoIncidentId,
   });
   if (!gate.ok) throw Object.assign(new Error(gate.error), { status: 409 });
+  if (input.to === "resolved") {
+    const c = input.closure;
+    if (!c) {
+      throw Object.assign(
+        new Error("resolved requires S12 closure review (verified postmortem) or an explicit administrative reason"),
+        { status: 409 },
+      );
+    }
+    if (c.mode === "verified") {
+      const rows = (await sql`
+        select id, source_fingerprint from incident_postmortems
+        where incident_id = ${input.incidentId} and workspace_id = ${input.workspaceId}
+          and status = 'finalized'
+        order by finalized_at desc limit 5
+      `) as unknown as { id: string; source_fingerprint: string }[];
+      if (!rows.some((r) => r.id === c.postmortemId)) {
+        throw Object.assign(new Error("verified closure needs a finalized postmortem for this incident"), { status: 409 });
+      }
+    } else {
+      if (!c.reason.trim()) throw Object.assign(new Error("administrative closure needs a reason"), { status: 400 });
+    }
+  }
 
   let mergedInto: string | null = null;
   if (input.to === "merged") {
@@ -352,14 +384,27 @@ export async function transitionIncident(input: {
   `;
   const after = await getIncidentForWorkspace(input.workspaceId, input.incidentId);
   if (!after) throw new Error("incident transition failed");
+  const closing = input.to === "resolved" ? input.closure ?? null : null;
   await recordEvent({
     incidentId: after.id,
-    kind: "status_changed",
+    kind:
+      input.to === "resolved" && closing?.mode === "verified"
+        ? "closure_confirmed"
+        : input.to === "resolved"
+          ? "closure_administrative"
+          : current.status === "resolved"
+            ? "closure_reopened"
+            : "status_changed",
     actorUserId: input.actorUserId ?? null,
     detail: {
       from: current.status,
       to: input.to,
       ...(input.to === "resolved" && resolution ? { resolution } : {}),
+      ...(closing?.mode === "verified" ? { postmortemId: closing.postmortemId, verifiedRecovery: true } : {}),
+      ...(closing?.mode === "administrative"
+        ? { administrative: true, reason: closing.reason.trim().slice(0, 500), verifiedRecovery: false }
+        : {}),
+      ...(current.status === "resolved" && input.to !== "resolved" ? { priorClosure: "preserved as history" } : {}),
       ...(input.to === "dismissed" && input.reason?.trim() ? { reason: input.reason.trim().slice(0, 500) } : {}),
       ...(mergedInto ? { mergedInto } : {}),
     },

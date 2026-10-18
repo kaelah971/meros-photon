@@ -20,6 +20,9 @@ export async function POST(
     resolutionSummary?: unknown;
     reason?: unknown;
     mergedIntoIncidentId?: unknown;
+    closureMode?: unknown;
+    closureReason?: unknown;
+    postmortemId?: unknown;
   };
   try {
     body = await req.json();
@@ -33,6 +36,7 @@ export async function POST(
     if (!ws) return NextResponse.json({ ok: false, error: "workspace not found" }, { status: 404 });
     await requireStaff(user.id, ws.id);
     const { id } = await ctx.params;
+    const closureMode = typeof body.closureMode === "string" ? body.closureMode : null;
     const updated = await transitionIncident({
       incidentId: id,
       workspaceId: ws.id,
@@ -42,6 +46,14 @@ export async function POST(
       reason: typeof body.reason === "string" ? body.reason : null,
       mergedIntoIncidentId:
         typeof body.mergedIntoIncidentId === "string" ? body.mergedIntoIncidentId : null,
+      // S12: the generic status route cannot bypass closure review.
+      // Verified closures go through /closure; this only carries an
+      // explicit audited administrative reason when supplied.
+      ...(closureMode === "verified" && typeof body.postmortemId === "string"
+        ? { closure: { mode: "verified" as const, postmortemId: body.postmortemId } }
+        : closureMode === "administrative" && typeof body.closureReason === "string"
+          ? { closure: { mode: "administrative" as const, reason: body.closureReason } }
+          : {}),
     });
     return NextResponse.json({
       ok: true,

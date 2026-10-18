@@ -488,6 +488,9 @@ export async function confirmResolution(
       actorUserId,
       note: note?.trim().slice(0, 500) || null,
     });
+    // Confirmation reviewed every message known at this point: it counts
+    // as a fresh evaluation for downstream closure review.
+    await deps.watches.touchEvaluation(watch.id, workspaceId, new Date().toISOString()).catch(() => null);
     return { action: "confirmed", watch: next };
   } catch (e) {
     return { action: "deferred", reason: e instanceof Error ? e.message : "confirm failed" };

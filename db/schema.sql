@@ -700,3 +700,35 @@ create unique index if not exists incident_watch_observations_msg_unique
   where message_id is not null;
 create index if not exists incident_watch_observations_watch_idx
   on incident_watch_observations (watch_id, created_at, id);
+
+-- Meros S12 closure + postmortems: durable review records for safe,
+-- human-controlled incident resolution. Drafts are refreshed from current
+-- S4–S11 state (fingerprint-gated); finalized rows are immutable history
+-- that survives reopening. One draft per incident; finalized rows are
+-- append-only. Additive + idempotent. No lifecycle coupling.
+
+create table if not exists incident_postmortems (
+  id uuid primary key default gen_random_uuid(),
+  incident_id uuid not null references incidents(id) on delete cascade,
+  workspace_id text not null references workspaces(id) on delete cascade,
+  watch_id uuid references incident_resolution_watches(id) on delete set null,
+  status text not null default 'draft'
+    check (status in ('draft', 'finalized')),
+  source_fingerprint text not null default '',
+  brief_fingerprint text not null default '',
+  content jsonb not null default '{}',
+  created_by_user_id text references "user"(id) on delete set null,
+  finalized_by_user_id text references "user"(id) on delete set null,
+  finalized_at timestamptz,
+  note text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create unique index if not exists incident_postmortems_draft_unique
+  on incident_postmortems (incident_id)
+  where status = 'draft';
+create unique index if not exists incident_postmortems_final_unique
+  on incident_postmortems (incident_id, source_fingerprint)
+  where status = 'finalized';
+create index if not exists incident_postmortems_incident_idx
+  on incident_postmortems (incident_id, status, created_at desc);

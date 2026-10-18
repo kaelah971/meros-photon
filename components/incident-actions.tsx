@@ -45,7 +45,6 @@ export default function IncidentActions({
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [resolution, setResolution] = useState("");
   const [reason, setReason] = useState("");
   const [mergeTarget, setMergeTarget] = useState("");
   const [splitTitle, setSplitTitle] = useState("");
@@ -80,7 +79,6 @@ export default function IncidentActions({
       postJson(`/api/incidents/${incidentId}/transition`, {
         workspaceSlug,
         to,
-        ...(to === "resolved" ? { resolutionSummary: resolution } : {}),
         ...(to === "dismissed" ? { reason } : {}),
       }),
     );
@@ -133,14 +131,13 @@ export default function IncidentActions({
           <div className="mt-1.5 flex flex-wrap gap-1.5">
             {nextStates.map((to) => (
               <span key={to}>
-                {to === "resolved" && showResolution !== to ? (
-                  <button
-                    type="button"
-                    onClick={() => setShowResolution(to)}
-                    className="rounded-md border border-[rgba(119,255,117,0.3)] px-3 py-1.5 text-xs text-[#9AFF8D]"
+                {to === "resolved" ? (
+                  <a
+                    href="#closure-readiness"
+                    className="inline-block rounded-md border border-[rgba(119,255,117,0.3)] px-3 py-1.5 text-xs text-[#9AFF8D]"
                   >
-                    {NEXT_LABELS[to] ?? to}
-                  </button>
+                    {NEXT_LABELS[to] ?? to} — via closure review
+                  </a>
                 ) : to === "dismissed" && showResolution !== to ? (
                   <button
                     type="button"
@@ -162,30 +159,6 @@ export default function IncidentActions({
               </span>
             ))}
           </div>
-          {showResolution === "resolved" && (
-            <div className="mt-2">
-              <textarea
-                value={resolution}
-                onChange={(e) => setResolution(e.target.value)}
-                placeholder="Resolution summary (what fixed it, verified how)"
-                rows={2}
-                className="w-full rounded bg-[#06100B] px-2 py-1.5 text-xs text-neutral-100"
-              />
-              <div className="mt-1 flex gap-2">
-                <button
-                  type="button"
-                  disabled={busy !== null}
-                  onClick={() => transition("resolved")}
-                  className="rounded-md bg-[#77FF75] px-3 py-1.5 text-xs font-medium text-[#030806] disabled:opacity-60"
-                >
-                  Confirm resolve
-                </button>
-                <button type="button" onClick={() => setShowResolution(null)} className="text-xs text-neutral-400">
-                  Cancel
-                </button>
-              </div>
-            </div>
-          )}
           {showResolution === "dismissed" && (
             <div className="mt-2">
               <input

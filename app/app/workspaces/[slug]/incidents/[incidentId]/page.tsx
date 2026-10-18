@@ -20,6 +20,7 @@ import IncidentSnapshot from "@/components/incident-snapshot";
 import IncidentFixMatches from "@/components/incident-fix-matches";
 import IncidentRecoveryPlan from "@/components/incident-recovery-plan";
 import ResolutionWatchSection from "@/components/resolution-watch-section";
+import ClosureSection from "@/components/closure-section";
 
 const NEXT: Record<string, string[]> = {
   detected: ["investigating", "dismissed"],
@@ -211,6 +212,8 @@ export default async function IncidentDetail({
       <IncidentRecoveryPlan workspaceSlug={slug} workspaceId={ws.id} incidentId={incident.id} />
 
       <ResolutionWatchSection workspaceSlug={slug} workspaceId={ws.id} incidentId={incident.id} />
+
+      <ClosureSection workspaceSlug={slug} workspaceId={ws.id} incidentId={incident.id} />
 
       <h2 className="mt-4 text-xs font-medium text-neutral-100">
         Activity ({events.length})

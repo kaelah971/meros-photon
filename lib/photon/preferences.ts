@@ -219,6 +219,31 @@ export async function isStoredPreferencesMalformed(
   return loaded.present && !loaded.valid;
 }
 
+/**
+ * S7 proactive foundation (default-disabled): bounded opt-in for FUTURE
+ * automatic incident evidence notifications. Missing row or missing/false
+ * value means OFF. Nothing in S7 consults this on any send path and no
+ * automatic send exists — it is stored intent only, for S8+ to enforce
+ * alongside the existing preference/quiet-hours gates if ever activated.
+ */
+export async function isEvidenceAutoNotifyEnabled(
+  workspaceId: string,
+  operatorUserId: string,
+): Promise<boolean> {
+  try {
+    const sql = await requireSql();
+    const rows = (await sql`
+      select evidence_auto_notify from operator_preferences
+      where workspace_id = ${workspaceId} and operator_user_id = ${operatorUserId}
+      limit 1
+    `) as unknown as { evidence_auto_notify: unknown }[];
+    return rows[0]?.evidence_auto_notify === true;
+  } catch {
+    // Unreadable state fails OFF (default-disabled), never guessed on.
+    return false;
+  }
+}
+
 /** Atomic validated upsert. Caller enforces staff + self-ownership. */
 export async function upsertPreferences(input: OperatorPreferences): Promise<OperatorPreferences> {
   const sql = await requireSql();

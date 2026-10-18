@@ -16,6 +16,7 @@ import { formatUtc } from "@/lib/datetime";
 import { EmptyState, StatusPill } from "@/components/meros-ui";
 import IncidentActions from "@/components/incident-actions";
 import EvidenceBrief from "@/components/evidence-brief";
+import IncidentSnapshot from "@/components/incident-snapshot";
 
 const NEXT: Record<string, string[]> = {
   detected: ["investigating", "dismissed"],
@@ -188,6 +189,19 @@ export default async function IncidentDetail({
       )}
 
       <EvidenceBrief workspaceSlug={slug} workspaceId={ws.id} incidentId={incident.id} />
+
+      <IncidentSnapshot
+        workspaceSlug={slug}
+        workspaceId={ws.id}
+        incident={{
+          id: incident.id,
+          title: incident.title,
+          status: incident.status,
+          severity: incident.severity,
+          customer_count: customers.length,
+          conversation_count: conversations.length,
+        }}
+      />
 
       <h2 className="mt-4 text-xs font-medium text-neutral-100">
         Activity ({events.length})

@@ -8,6 +8,7 @@ export type OperatorNotificationType =
   | "connectivity_test"
   | "incident_detected"
   | "evidence_ready"
+  | "evidence_snapshot"
   | "recovery_approval_required"
   | "recovery_progress"
   | "incident_resolved";

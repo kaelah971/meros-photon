@@ -494,3 +494,39 @@ create table if not exists incident_evidence_briefs (
   error text,
   updated_at timestamptz not null default now()
 );
+
+-- Meros S7 incident snapshot deliveries: one durable row per explicit
+-- operator send of an evidence snapshot. The row is BOTH the delivery
+-- record and the idempotency guard: unique(idempotency_key) means a
+-- double-click, browser retry, or concurrent request with the same client
+-- key returns the existing attempt instead of resending. The snapshot body
+-- is derived deterministically from the persisted brief version +
+-- fingerprint (never regenerated AI); 'sent' means accepted by Photon
+-- (handset delivery is NOT confirmed). Additive + idempotent.
+
+create table if not exists incident_snapshot_deliveries (
+  id uuid primary key default gen_random_uuid(),
+  incident_id uuid not null references incidents(id) on delete cascade,
+  workspace_id text not null references workspaces(id) on delete cascade,
+  binding_id uuid references photon_operator_bindings(id) on delete set null,
+  brief_fingerprint text not null default '',
+  brief_version integer not null default 1,
+  idempotency_key text not null,
+  status text not null default 'sending'
+    check (status in ('sending', 'sent', 'failed')),
+  provider_message_id text,
+  error text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create unique index if not exists incident_snapshot_deliveries_key_unique
+  on incident_snapshot_deliveries (idempotency_key);
+create index if not exists incident_snapshot_deliveries_incident_idx
+  on incident_snapshot_deliveries (incident_id, created_at desc);
+
+-- Meros S7 proactive foundation (default-disabled): a bounded opt-in for
+-- FUTURE automatic incident evidence notifications. Default false; nothing
+-- in S7 reads it on any send path, and no automatic send exists yet.
+-- Standalone ALTER so existing tables gain it. Additive + idempotent.
+alter table if exists operator_preferences
+  add column if not exists evidence_auto_notify boolean not null default false;

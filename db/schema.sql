@@ -760,3 +760,35 @@ create unique index if not exists incident_memory_links_card_unique
   on incident_memory_links (fix_card_id);
 create index if not exists incident_memory_links_incident_idx
   on incident_memory_links (incident_id, created_at desc);
+
+-- Meros S14 Knowledge Health: advisory findings about knowledge quality —
+-- recurring problems without documented solutions, possibly conflicting
+-- guidance, and stale memory provenance. Findings dedupe on
+-- (workspace, entity_key); changed evidence supersedes the prior open row
+-- (history preserved, never deleted). Additive + idempotent.
+
+create table if not exists knowledge_findings (
+  id uuid primary key default gen_random_uuid(),
+  workspace_id text not null references workspaces(id) on delete cascade,
+  type text not null default 'gap'
+    check (type in ('gap', 'contradiction', 'stale')),
+  confidence text not null default 'low'
+    check (confidence in ('high', 'low')),
+  status text not null default 'open'
+    check (status in ('open', 'acknowledged', 'dismissed', 'addressed', 'superseded')),
+  title text not null default '',
+  detail jsonb not null default '{}',
+  fingerprint text not null default '',
+  entity_key text not null default '',
+  first_seen_at timestamptz not null default now(),
+  last_seen_at timestamptz not null default now(),
+  reviewed_by_user_id text references "user"(id) on delete set null,
+  review_note text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create unique index if not exists knowledge_findings_open_unique
+  on knowledge_findings (workspace_id, entity_key)
+  where status in ('open', 'acknowledged');
+create index if not exists knowledge_findings_workspace_idx
+  on knowledge_findings (workspace_id, status, updated_at desc);

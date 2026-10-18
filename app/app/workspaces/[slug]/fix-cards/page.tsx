@@ -3,6 +3,7 @@ import { currentUser } from "@/lib/auth";
 import { getOwnedWorkspace } from "@/lib/db";
 import { listFixCards } from "@/lib/support-ops";
 import FixCardsView from "@/components/fix-cards-view";
+import KnowledgeHealthSection from "@/components/knowledge-health-section";
 
 /** Staff Fix Cards queue. Exact sanitized candidate + review actions. */
 export default async function FixCardsPage({
@@ -18,7 +19,9 @@ export default async function FixCardsPage({
 
   const cards = await listFixCards(ws.id);
   return (
-    <FixCardsView
+    <>
+      <KnowledgeHealthSection workspaceSlug={ws.slug} workspaceId={ws.id} />
+      <FixCardsView
       workspaceSlug={ws.slug}
       initial={cards.map((c) => ({
         id: c.id,
@@ -29,5 +32,6 @@ export default async function FixCardsPage({
         createdAt: c.created_at,
       }))}
     />
+    </>
   );
 }

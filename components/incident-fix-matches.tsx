@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { getIncidentBrief } from "@/lib/evidence-brief";
 import { realMatchStore, type MatchRow } from "@/lib/fix-matches";
+import { realMemoryStore } from "@/lib/operator-memory";
 import FixMatchesRefreshButton from "@/components/fix-matches-refresh-button";
 
 function tierLabel(tier: MatchRow["tier"]): { text: string; cls: string } {
@@ -76,6 +77,17 @@ export default async function IncidentFixMatches({
   const current = store ? await store.loadForBrief(incidentId, workspaceId, brief.fingerprint).catch(() => []) : [];
   const latest = store ? await store.loadLatest(incidentId, workspaceId).catch(() => null) : null;
   const staleCount = latest && latest.fingerprint !== brief.fingerprint ? latest.rows.length : 0;
+  // S13 provenance: mark matches backed by reviewed postmortem memory.
+  let memoryByCard = new Map<string, { verified: boolean; postmortemId: string }>();
+  try {
+    const mstore = await realMemoryStore();
+    const links = await mstore.listForCards(workspaceId, current.map((m) => m.ref_id)).catch(() => new Map());
+    for (const [cardId, link] of links) {
+      memoryByCard.set(cardId, { verified: link.verified, postmortemId: link.postmortem_id });
+    }
+  } catch {
+    memoryByCard = new Map();
+  }
 
   return (
     <div className="mt-4 rounded-md border border-[rgba(119,255,117,0.14)] bg-[rgba(10,27,18,0.72)] px-3 py-2.5">
@@ -154,6 +166,15 @@ export default async function IncidentFixMatches({
                     Not directly applicable: {p.warning}
                   </p>
                 )}
+                {(() => {
+                  const mem = memoryByCard.get(m.ref_id);
+                  if (!mem) return null;
+                  return (
+                    <p className="mt-1 font-mono text-[10px] text-[#9AFF8D]/80">
+                      Operator memory · {mem.verified ? "verified outcome" : "unverified"} · postmortem {mem.postmortemId.slice(0, 8)}
+                    </p>
+                  );
+                })()}
                 {p.applicable && m.tier !== "verified_fix" && (
                   <p className="mt-1 text-[11px] text-neutral-500">
                     Historical outcome is not verified — treat as a lead, not a prescription.

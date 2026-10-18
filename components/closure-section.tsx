@@ -1,6 +1,9 @@
 import { checkEligibility, type PostmortemContent, type PostmortemRow } from "@/lib/closure";
 import { realClosureDeps } from "@/lib/closure-store";
+import { realMemoryStore, type MemoryLinkRow } from "@/lib/operator-memory";
+import { getFixCardForWorkspace } from "@/lib/support-ops";
 import ClosureActions from "@/components/closure-actions";
+import MemoryCandidateActions from "@/components/memory-candidate-actions";
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -104,6 +107,45 @@ function PostmortemCard({ pm, historic }: { pm: PostmortemRow; historic?: boolea
   );
 }
 
+function MemoryBlock({
+  workspaceSlug,
+  incidentId,
+  postmortemId,
+  links,
+  cardStatusByLink,
+}: {
+  workspaceSlug: string;
+  incidentId: string;
+  postmortemId: string;
+  links: MemoryLinkRow[];
+  cardStatusByLink: Map<string, string>;
+}) {
+  return (
+    <div className="mt-1 rounded border border-[rgba(255,255,255,0.08)] px-2 py-1.5">
+      <p className="text-[11px] font-medium text-neutral-300">
+        OPERATOR MEMORY
+        <span className="ml-2 font-normal text-neutral-500">reviewed knowledge only — never automatic</span>
+      </p>
+      {links.length === 0 && (
+        <p className="mt-0.5 flex flex-wrap items-center gap-2 text-[11px] text-neutral-500">
+          No memory candidate proposed from this postmortem yet.
+          <MemoryCandidateActions workspaceSlug={workspaceSlug} incidentId={incidentId} postmortemId={postmortemId} />
+        </p>
+      )}
+      {links.map((l) => {
+        const cardStatus = cardStatusByLink.get(l.id) ?? "unknown";
+        return (
+          <p key={l.id} className="mt-0.5 font-mono text-[10px] text-neutral-400">
+            candidate {l.tier === "verified_fix" ? "verified outcome" : "unverified"} · fix {l.fix_card_id.slice(0, 8)} · {cardStatus}
+            {cardStatus === "pending_review" && " — awaiting staff review in Fix Cards"}
+            {cardStatus === "shared" && " — approved shared memory, recalled by future matching"}
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
 /**
  * S12 closure + postmortems. Read-only when data is missing; never
  * executes, sends, or auto-closes. Degrades without breaking the page.
@@ -121,6 +163,8 @@ export default async function ClosureSection({
   let blockers: string[] = [];
   let draft: PostmortemRow | null = null;
   let finalized: PostmortemRow[] = [];
+  let memoryLinks: MemoryLinkRow[] = [];
+  let cardStatusByLink = new Map<string, string>();
   let failed = false;
   try {
     const deps = await realClosureDeps({ judge: false });
@@ -137,6 +181,19 @@ export default async function ClosureSection({
     ]);
     if (!draft) draft = d;
     finalized = f;
+    try {
+      const mstore = await realMemoryStore();
+      memoryLinks = await mstore.listApprovedForIncident(incidentId, workspaceId).catch(() => []);
+      const statuses = await Promise.all(
+        memoryLinks.map(async (l) => ({
+          id: l.id,
+          status: (await getFixCardForWorkspace(l.fix_card_id, workspaceId).catch(() => null))?.status ?? "unknown",
+        })),
+      );
+      cardStatusByLink = new Map(statuses.map((s) => [s.id, s.status]));
+    } catch {
+      memoryLinks = [];
+    }
   } catch {
     failed = true;
   }
@@ -182,7 +239,16 @@ export default async function ClosureSection({
         <div className="mt-2">
           <p className="text-[11px] font-medium text-neutral-300">FINALIZED HISTORY (survives reopening)</p>
           {finalized.slice(0, 3).map((p) => (
-            <PostmortemCard key={p.id} pm={p} historic={draft?.id !== p.id} />
+            <span key={p.id} className="block">
+              <PostmortemCard pm={p} historic={draft?.id !== p.id} />
+              <MemoryBlock
+                workspaceSlug={workspaceSlug}
+                incidentId={incidentId}
+                postmortemId={p.id}
+                links={memoryLinks.filter((l) => l.postmortem_id === p.id)}
+                cardStatusByLink={cardStatusByLink}
+              />
+            </span>
           ))}
         </div>
       )}

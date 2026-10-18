@@ -732,3 +732,31 @@ create unique index if not exists incident_postmortems_final_unique
   where status = 'finalized';
 create index if not exists incident_postmortems_incident_idx
   on incident_postmortems (incident_id, status, created_at desc);
+
+-- Meros S13 Operator Memory: provenance links from finalized postmortems
+-- to Fix Cards proposed as reusable knowledge. The card lifecycle itself
+-- (pending → shared/kept_private/failed/superseded) stays in fix_cards;
+-- this table records WHY a card exists: which incident + postmortem it
+-- came from, the intended tier, and whether the closure was verified.
+-- One candidate per postmortem (dedupe); history is append-only.
+-- Additive + idempotent. No lifecycle coupling.
+
+create table if not exists incident_memory_links (
+  id uuid primary key default gen_random_uuid(),
+  incident_id uuid not null references incidents(id) on delete cascade,
+  workspace_id text not null references workspaces(id) on delete cascade,
+  postmortem_id uuid not null references incident_postmortems(id) on delete cascade,
+  fix_card_id uuid not null references fix_cards(id) on delete cascade,
+  tier text not null default 'documented_unverified'
+    check (tier in ('verified_fix', 'documented_unverified')),
+  verified boolean not null default false,
+  source_fingerprint text not null default '',
+  created_by_user_id text references "user"(id) on delete set null,
+  created_at timestamptz not null default now()
+);
+create unique index if not exists incident_memory_links_postmortem_unique
+  on incident_memory_links (postmortem_id);
+create unique index if not exists incident_memory_links_card_unique
+  on incident_memory_links (fix_card_id);
+create index if not exists incident_memory_links_incident_idx
+  on incident_memory_links (incident_id, created_at desc);

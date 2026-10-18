@@ -6,7 +6,8 @@
 
 Memory-native customer support — turning confirmed resolutions into reusable organizational memory, while keeping customer context private.
 
-[![OPEN MEROS](https://img.shields.io/badge/OPEN_MEROS-Live_App-00E599?style=for-the-badge&logo=vercel&logoColor=white)](https://usemeros.vercel.app)
+[![MEROS PHOTON](https://img.shields.io/badge/MEROS_PHOTON-Live_App-00E599?style=for-the-badge&logo=vercel&logoColor=white)](https://meros-photon.vercel.app)
+[![OPEN MEROS](https://img.shields.io/badge/OPEN_MEROS-Original_Demo-888888?style=for-the-badge&logo=vercel&logoColor=white)](https://usemeros.vercel.app)
 [![WATCH DEMO](https://img.shields.io/badge/WATCH_DEMO-YouTube-FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://youtu.be/9kmpZT66M4k?si=e17SXph7HeJx7L5x)
 [![READ THE STORY](https://img.shields.io/badge/READ_THE_STORY-Medium-000000?style=for-the-badge&logo=medium&logoColor=white)](https://medium.com/@kaelah679/how-meros-turns-support-conversations-into-shared-memory-20fa5ae4e4b1)
 
@@ -19,7 +20,9 @@ Memory-native customer support — turning confirmed resolutions into reusable o
 ![Next.js](https://img.shields.io/badge/Next.js-15-000000?style=flat-square&logo=next.js&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-Strict-3178C6?style=flat-square&logo=typescript&logoColor=white)
 
-[Live App](https://usemeros.vercel.app) · [Demo Video](https://youtu.be/9kmpZT66M4k?si=e17SXph7HeJx7L5x) · [Medium Article](https://medium.com/@kaelah679/how-meros-turns-support-conversations-into-shared-memory-20fa5ae4e4b1) · [Walrus Proof](#walrus-memory-proof) · [Architecture](#architecture) · [Demo Flow](#demo-flow-for-judges) · [Running Locally](#running-locally)
+[Live App (Photon)](https://meros-photon.vercel.app) · [Original Meros demo](https://usemeros.vercel.app) · [Demo Video](https://youtu.be/9kmpZT66M4k?si=e17SXph7HeJx7L5x) · [Medium Article](https://medium.com/@kaelah679/how-meros-turns-support-conversations-into-shared-memory-20fa5ae4e4b1) · [Walrus Proof](#walrus-memory-proof) · [Photon operations](#meros-photon--incident-operations) · [Architecture](#architecture) · [Demo Flow](#demo-flow-for-judges) · [Running Locally](#running-locally)
+
+> **Two deployments, one lineage.** [Meros Photon](https://meros-photon.vercel.app) is the current operations product (S1–S13 below: incident lifecycle, approval-controlled recovery, Resolution Watch, evidence-backed closure, Operator Memory). [usemeros.vercel.app](https://usemeros.vercel.app) is the preserved original Walrus Meros hackathon demo (Alice → staff → Bob shared-memory loop, Walrus Mainnet proof). They are not the same deployment; Memory Mainnet proof below belongs to the original demo and is kept as history.
 
 </div>
 
@@ -66,6 +69,59 @@ Meros keeps two separate memories for support:
 Every answer shows which memory influenced it, and any answer can be rerun with memory disabled to show what changed.
 
 > Share the fix. Keep the customer private.
+
+---
+
+## Meros Photon — incident operations
+
+Meros Photon ([live](https://meros-photon.vercel.app)) extends the memory loop above into a full incident-operations product. After a support conversation becomes a tracked incident, Photon carries it through investigation, approval-controlled recovery, resolution monitoring, evidence-backed closure, and reusable operator memory — with a human decision at every consequential step.
+
+### Incident workspace (staff console)
+
+![Photon staff console](docs/screenshots/s13-console-1440x900.png)
+
+Open issues, customers, conversations, pending Fix Cards, and shared fixes at a glance, plus iMessage operator pairing, notification preferences, and the customer support URL.
+
+### Incident detail — evidence, plans, watch, closure
+
+![Photon incident detail, desktop](docs/screenshots/s13-incident-1440x900.png)
+
+One page carries the whole lifecycle: linked customers/conversations, the source-backed Evidence Brief, visual snapshots, Related Fix Cards, staged Recovery Plans with approval controls, Resolution Watch, and Closure Readiness with the postmortem under review. Empty states are honest — nothing is invented when evidence is missing.
+
+![Photon incident detail, mobile](docs/screenshots/s13-incident-390x844.png)
+
+The same page at 390px: sections stack, actions wrap, nothing overlaps or clips.
+
+### Fix Card review — shared resolutions
+
+![Photon Fix Card review queue](docs/screenshots/s13-fixcards-1440x900.png)
+
+Resolved issues with a grounded, reusable fix appear here for staff approval — nothing becomes shared on its own. S13 operator-memory candidates proposed from closed incidents land in this same queue.
+
+### What Photon adds (S1–S13)
+
+- **Photon operator integration** — iMessage pairing, staff presence, quiet hours, and explicit test notifications. No automatic customer messages, ever.
+- **Incident detection & investigation (S4/S5)** — customer reports become tracked incidents with a validated lifecycle (`detected → investigating → ready_for_action → recovering → monitoring → resolved`), linked conversations/customers, and append-only audit history.
+- **Evidence briefs & snapshots (S6/S7)** — source-backed briefs assembled from linked reports (every claim cites a message), plus visual evidence snapshots sent only by explicit operator action.
+- **Approval-controlled recovery (S9/S10)** — grounded recovery proposals, then plan-specific approvals with risk acknowledgment, expiry, and scope hashing. No automatic execution exists anywhere: approved work is recorded as manual, operator-reported steps with independent verification.
+- **Resolution Watch (S11)** — durable post-intervention monitoring that distinguishes customer-reported improvement, persistence, and regression from real follow-up evidence. Silence is never proof.
+- **Evidence-backed closure & postmortems (S12)** — closure requires an eligible `monitoring` incident, a confirmed Resolution Watch, fresh evidence, and a current postmortem draft. The generic status route cannot bypass review; reopening preserves finalized history.
+- **Operator Memory (S13)** — verified closures yield grounded memory candidates (explicit staff proposal from a finalized postmortem), reviewed through the existing Fix Card flow, recalled in later incidents with provenance (`Operator memory · verified outcome · postmortem <id>`) and workspace isolation.
+
+### Privacy and approval boundaries
+
+- Workspace isolation on every read and mutation; cross-workspace recall is structurally excluded.
+- No automatic publication: Fix Cards, memories, and closures all require explicit staff decisions; failed Walrus writes are reported as failures, never successes.
+- Redaction gates block emails, secrets, key patterns, and namespace leaks; raw transcripts are never inserted into shared memory.
+- Administrative closures are audited as non-verified and can never become shared memory.
+- Recalled memory is untrusted context for investigation, never instructions; nothing auto-executes, auto-messages, or auto-closes.
+
+### Known limitations
+
+- No provider-backed recovery executors exist: recovery is manual-operator work tracked in Meros, not automation.
+- Postmortem root causes stay `unknown`/`unverified` — Meros has no root-cause verification mechanism and never claims proof.
+- S13 memories recall as `documented_unverified` under S8 tier semantics (a `verified_fix` tier additionally requires a resolved linked support issue, which incident-derived memory does not fabricate).
+- Screenshots above are synthetic fixtures (marked `[fixture]`, since deleted), captured with Playwright via `scripts/capture-s13-shots.mjs` across 360–1440px viewports plus a short-height pass; the bottom-left “N” badge in shots is the Next.js dev indicator, absent in production.
 
 ---
 
@@ -368,7 +424,8 @@ The suite mixes fast pure tests and marked live integration tests (live Neon; Wa
 
 ## Deployment / live demo
 
-- **Live app:** https://usemeros.vercel.app
+- **Live app (Photon):** https://meros-photon.vercel.app
+- **Original Meros demo (preserved):** https://usemeros.vercel.app
 - **Demo video:** https://youtu.be/9kmpZT66M4k?si=e17SXph7HeJx7L5x
 - **Medium article:** https://medium.com/@kaelah679/how-meros-turns-support-conversations-into-shared-memory-20fa5ae4e4b1
 

@@ -206,6 +206,15 @@ export async function POST(
         2000,
       );
       await markFixCardShared(card.id, done.blobId, user.id, reviewed);
+      // S13: a shared card backed by a postmortem supersedes older shared
+      // memories for the same incident. Failure-isolated — the share
+      // itself already succeeded and must never be rolled back by this.
+      try {
+        const { linkMemoryShare } = await import("@/lib/operator-memory");
+        await linkMemoryShare(ws.id, card.id, user.id);
+      } catch {
+        // Link bookkeeping is best-effort; the approved memory stands.
+      }
       return NextResponse.json({
         ok: true,
         status: "shared",

@@ -58,11 +58,88 @@ export function shortRef(id: string): string {
   return id.slice(0, 8);
 }
 
-/** Hard cap for phone readability; appends a pointer, never truncates mid-word silently. */
+// ---- iMessage formatting + links (single shared seam) ----
+
+const DEFAULT_PUBLIC_ORIGIN = "https://meros-photon.vercel.app";
+
+/** Trusted canonical origin for staff-console links. Env-overridable, https-only — never model or user input. */
+export function consoleOrigin(): string {
+  const raw = (process.env.MEROS_PUBLIC_ORIGIN ?? "").trim().replace(/\/+$/, "");
+  if (/^https:\/\/[A-Za-z0-9.-]+(?::\d+)?$/.test(raw)) return raw;
+  return DEFAULT_PUBLIC_ORIGIN;
+}
+
+/** Absolute staff-console URL — iMessage cannot use relative paths. Already-absolute https URLs pass through untouched. */
+export function publicLink(path: string): string {
+  if (/^https:\/\//i.test(path.trim())) return path.trim();
+  const p = path.startsWith("/") ? path : `/${path}`;
+  return `${consoleOrigin()}${p}`;
+}
+
+/**
+ * Normalize reply text for narrow phone screens WITHOUT destroying
+ * meaning: intentional paragraph breaks survive, spaces/tabs inside a
+ * line collapse, CRLF is safe, runs of blank lines become one, control
+ * characters and leading/trailing blank lines go. Bullets and
+ * punctuation are untouched.
+ */
+export function formatMessageBody(text: string): string {
+  const lines = text
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((l) =>
+      l
+        .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+        .replace(/[\t ]+/g, " ")
+        .trim(),
+    );
+  const out: string[] = [];
+  let blanks = 0;
+  for (const l of lines) {
+    if (!l) {
+      blanks++;
+      if (out.length > 0 && blanks <= 1) out.push("");
+      continue;
+    }
+    blanks = 0;
+    out.push(l);
+  }
+  while (out.length > 0 && !out[out.length - 1]) out.pop();
+  return out.join("\n");
+}
+
+/**
+ * Shorten to max chars at a word boundary, never inside a URL (a link
+ * the cut would split is dropped whole instead of left half-clickable).
+ */
+export function truncateClean(text: string, max: number, ellipsis = true): string {
+  const t = text.trimEnd();
+  if (t.length <= max || max <= 0) return max <= 0 ? "" : t;
+  const spans: [number, number][] = [];
+  const re = /https?:\/\/\S+/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(t))) spans.push([m.index, m.index + m[0].length]);
+  let cut = max;
+  while (cut > 0 && !/\s/.test(t[cut]!)) cut--;
+  if (cut <= 0) cut = max;
+  for (const [s, e] of spans) {
+    if (cut > s && cut < e) {
+      cut = s;
+      break;
+    }
+  }
+  const body = t.slice(0, cut).trimEnd();
+  if (!body) return ellipsis ? `${t.slice(0, Math.max(0, max - 1)).trimEnd()}…` : t.slice(0, max).trimEnd();
+  return ellipsis ? `${body}…` : body;
+}
+
+/** Paragraph-safe cap for phone readability; never truncates mid-link. Link is absolute (iMessage-safe). */
 export function fitReply(text: string, link: string): string {
-  if (text.length <= MAX_REPLY_CHARS) return text;
-  const suffix = `\n… (full detail: ${link})`;
-  return text.slice(0, MAX_REPLY_CHARS - suffix.length - 1).trimEnd() + suffix;
+  const body = formatMessageBody(text);
+  if (body.length <= MAX_REPLY_CHARS) return body;
+  const full = publicLink(link);
+  const suffix = `\n… (full detail: ${full})`;
+  return truncateClean(body, MAX_REPLY_CHARS - suffix.length, false) + suffix;
 }
 
 export function helpText(): string {
@@ -186,15 +263,15 @@ function fmtDate(iso: string | null): string {
 }
 
 export function candidateLink(slug: string, id: string): string {
-  return `/app/workspaces/${slug}/incidents/detected/${id}`;
+  return publicLink(`/app/workspaces/${slug}/incidents/detected/${id}`);
 }
 
 export function incidentLink(slug: string, id: string): string {
-  return `/app/workspaces/${slug}/incidents/${id}`;
+  return publicLink(`/app/workspaces/${slug}/incidents/${id}`);
 }
 
 export function evidenceLink(slug: string, id: string): string {
-  return `/app/workspaces/${slug}/incidents/${id}/evidence`;
+  return publicLink(`/app/workspaces/${slug}/incidents/${id}/evidence`);
 }
 
 // ---- Reply builders (pure) ----
@@ -321,7 +398,7 @@ export function decisionsReply(slug: string, items: DecisionItem[]): string {
   for (const d of items.slice(0, 8)) lines.push(`• ${d.label}`);
   lines.push(`Decisions happen in the web console — nothing is acted on from here.`);
   void slug;
-  return fitReply(lines.join("\n"), `/app/workspaces/${slug}/incidents`);
+  return fitReply(lines.join("\n"), publicLink(`/app/workspaces/${slug}/incidents`));
 }
 
 export function ambiguousReply(ref: string, options: { kind: "candidate" | "incident"; id: string; title: string }[]): string {

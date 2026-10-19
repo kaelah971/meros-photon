@@ -168,30 +168,49 @@ export function parseAtIntent(text: string): AtIntent | null {
 }
 
 export const AT_MENU_TEXT =
-  `Meros shortcuts \u2014 or just ask in plain words, I understand those too:\n` +
-  `@status \u2014 workspace overview\n` +
-  `@alerts \u2014 possible recurring problems\n` +
-  `@incidents \u2014 active incidents\n` +
-  `@reviews \u2014 pending operator decisions\n` +
-  `@memory \u2014 historical fixes\n` +
-  `@help \u2014 show this menu`;
+  `Meros shortcuts\n` +
+  `\n` +
+  `CHECK YOUR TEAM\n` +
+  `@status \u2014 How things are going\n` +
+  `@alerts \u2014 Possible recurring problems\n` +
+  `@incidents \u2014 Issues being investigated\n` +
+  `\n` +
+  `WORK TO REVIEW\n` +
+  `@reviews \u2014 Things needing your decision\n` +
+  `@memory \u2014 Past fixes and lessons\n` +
+  `\n` +
+  `@help \u2014 Show this menu\n` +
+  `\n` +
+  `You can also just ask in plain words.`;
 
 function plural(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`;
 }
 
-/** Exact S1 reply body from LIVE stats. Pure — never hardcoded demo numbers. */
+/** Human-readable S1 reply from LIVE stats. Quiet stays quiet; totals are labeled all-time, never today's activity. */
 export function formatStatsReply(workspaceName: string, s: StatsSnapshot): string {
+  const allQuiet =
+    s.openIssues === 0 && s.pendingFixCards === 0 && s.conversations === 0 && s.customers === 0;
+  if (allQuiet) {
+    return [
+      `Things are quiet in ${workspaceName}.`,
+      ``,
+      `There aren't any customer conversations or open issues here yet.`,
+      ``,
+      `Nothing is waiting for your review.`,
+    ].join("\n");
+  }
+  const reviewBit =
+    s.pendingFixCards === 0
+      ? `Nothing waiting for review.`
+      : `${s.pendingFixCards} thing${s.pendingFixCards === 1 ? "" : "s"} waiting for review.`;
+  const fixesBit = s.sharedFixes > 0 ? ` ${s.sharedFixes} shared fix${s.sharedFixes === 1 ? "" : "es"} saved.` : "";
   return [
-    `Meros — ${workspaceName} right now:`,
+    `${workspaceName} — all-time totals:`,
     ``,
-    plural(s.conversations, "conversation", "conversations"),
-    plural(s.customers, "customer", "customers"),
-    plural(s.openIssues, "open issue", "open issues"),
-    plural(s.pendingFixCards, "Fix Card waiting for review", "Fix Cards waiting for review"),
-    plural(s.sharedFixes, "shared fix", "shared fixes"),
+    `${s.conversations} customer conversation${s.conversations === 1 ? "" : "s"}, ${s.customers} customer${s.customers === 1 ? "" : "s"}, ${s.openIssues} open issue${s.openIssues === 1 ? "" : "s"}.`,
     ``,
-    `Nothing urgent is being inferred yet — this is just the live workspace proof.`,
+    `${reviewBit}${fixesBit}`,
   ].join("\n");
 }
 
@@ -543,11 +562,12 @@ async function handleAtIntent(
     return { action: "stats", replyText };
   }
   if (at.kind === "memory") {
+    const inv = await import("./investigate");
     const slug = await deps.investigate?.workspaceSlug(ws).catch(() => null);
     if (!slug) return { action: "unavailable", replyText: INVESTIGATE_UNAVAILABLE_TEXT };
     const replyText =
-      `Past fixes the team verified live in your Fix Cards library \u2014 open it here (staff sign-in):\n` +
-      `/app/workspaces/${slug}/fix-cards\n` +
+      `Past fixes the team verified live in your Fix Cards library \u2014 open it here (staff sign-in):\n\n` +
+      `${inv.publicLink(`/app/workspaces/${slug}/fix-cards`)}\n\n` +
       `I can't list private customer history in chat, but anything verified is saved there.`;
     await replyOnce(deps, linkCtx, replyText, "replied");
     return { action: "at-memory", replyText };

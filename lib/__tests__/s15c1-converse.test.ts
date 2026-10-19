@@ -379,8 +379,8 @@ describe("empty workspace experience", () => {
   it("status is calm, honest, and never claims analysis ran", async () => {
     const f = makeFakes({ readStats: emptyStats }, emptyReads);
     await handleOperatorMessage(IN("what's happening today?", "e1"), f.deps);
-    expect(f.posts[0]).toMatch(/no active incidents|aren't any active incidents/i);
-    expect(f.posts[0]).toMatch(/haven't received customer reports|no customer reports/i);
+    expect(f.posts[0]).toMatch(/no open issues|no customer reports/i);
+    expect(f.posts[0]).toMatch(/no customer reports/i);
     expect(f.posts[0]).not.toMatch(/Radar/i);
     expect(f.posts[0]).not.toMatch(/current v|fp-|VERIFIED/);
     expect(f.posts[0].length).toBeLessThanOrEqual(500);
@@ -389,7 +389,7 @@ describe("empty workspace experience", () => {
   it("latest incident is honest when nothing exists", async () => {
     const f = makeFakes({ readStats: emptyStats }, emptyReads);
     await handleOperatorMessage(IN("show me the latest incident", "e2"), f.deps);
-    expect(f.posts[0]).toMatch(/No incidents yet/i);
+    expect(f.posts[0]).toMatch(/No open issues yet/i);
     expect(f.posts[0]).not.toMatch(/Radar/i);
   });
 

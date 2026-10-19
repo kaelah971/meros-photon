@@ -19,6 +19,7 @@ import "server-only";
 //   every model call, deterministic fallback on any model failure.
 
 import type { InvestigateReads } from "./investigate";
+import { candidateLink, formatMessageBody, incidentLink, publicLink, truncateClean } from "./investigate";
 import type { StatsSnapshot } from "./operator";
 
 export const CONVERSE_NORMAL_MAX = 500;
@@ -292,6 +293,9 @@ You receive FACTS verified from the workspace database plus the operator's quest
 - Do NOT invent links or URLs — a console link is appended separately when relevant.
 - Answer the question directly, add one line on why it matters when useful, and at most ONE gentle next-step suggestion when genuinely useful. Do not end every reply with a question.
 - An action the operator asked to perform (approve, send, fix, close, change) was NOT performed: explain briefly it needs the staff console.
+- Shape every reply the same way: direct answer first, then relevant context on its own paragraph (one blank line between paragraphs), then at most ONE useful next step. Short sentences, everyday words.
+- Operator-friendly words: say "possible recurring problem" not "candidate", "things needing review" not "pending decisions", "your team inbox" not "workspace", "looks like" not "inferred". Still quote exact stored states (investigating, pending) verbatim when giving them.
+- Never claim everything is running smoothly, all problems are fixed, every customer is happy, or that silence means the product is healthy. Never promise future automatic alerts unless FACTS confirm a recent Radar alert. Keep verified, suspected, unknown, stale, and historical evidence distinct.
 - If FACTS say the workspace is empty, say so warmly: no active incidents, no customer reports to investigate yet. Never imply analysis ran on records that do not exist. Never mention Radar unless FACTS mention a Radar alert.`;
 
 export async function defaultPhrase(input: PhraseInput): Promise<string> {
@@ -344,20 +348,21 @@ function short(id: string): string {
   return id.slice(0, 8);
 }
 
-/** Fit a conversational reply to its cap, preserving an appended link. */
+/** Fit a conversational reply to its cap. Paragraph breaks survive; the appended console link is absolute and never split. */
 export function fitConverse(body: string, link: string | null, detailed: boolean): string {
   const cap = detailed ? CONVERSE_DETAILED_MAX : CONVERSE_NORMAL_MAX;
-  const clean = body.replace(/\s+/g, " ").trim() || "Here's what I found.";
-  const full = link ? `${clean}\n${link}` : clean;
+  const clean = formatMessageBody(body) || "Here's what I found.";
+  const fullLink = link ? publicLink(link) : null;
+  const full = fullLink ? `${clean}\n\n${fullLink}` : clean;
   if (full.length <= cap) return full;
-  if (!link) return `${clean.slice(0, cap - 1).trimEnd()}…`;
-  const keep = Math.max(0, cap - link.length - 2);
-  return `${clean.slice(0, keep).trimEnd()}…\n${link}`;
+  if (!fullLink) return truncateClean(clean, cap);
+  const keep = Math.max(0, cap - fullLink.length - 2);
+  return `${truncateClean(clean, keep, false)}\n\n${fullLink}`;
 }
 
 function statsLine(workspaceName: string, s: StatsSnapshot): string {
   return (
-    `${workspaceName} right now: ${s.conversations} conversations, ${s.customers} customers, ` +
+    `${workspaceName}, all time: ${s.conversations} conversations, ${s.customers} customers, ` +
     `${s.openIssues} open issues, ${s.pendingFixCards} Fix Cards awaiting review, ${s.sharedFixes} shared fixes.`
   );
 }
@@ -608,6 +613,7 @@ export function factsText(ctx: ConverseContext, plan: ConversePlan, slug: string
   if (plan.kind === "status" || plan.kind === "worry" || plan.kind === "attention") {
     lines.push("TIME: the stats above are all-time workspace totals, not today's activity — never present them as happening today. Only describe today specifically when dated records support it.");
   }
+  lines.push("TRUTH: never claim everything is fine, fixed, or healthy, and never promise automatic alerts unless RADAR above confirms a recent alert.");
   if (ctx.incidents.length > 0) {
     lines.push(
       `ACTIVE INCIDENTS (${ctx.incidents.length}): ` +
@@ -668,62 +674,60 @@ export function factsText(ctx: ConverseContext, plan: ConversePlan, slug: string
 // ---- Deterministic fallback (no model, never hallucinates) ----
 
 export function fallbackReply(ctx: ConverseContext, plan: ConversePlan, slug: string): { body: string; link: string | null } {
-  const { incidentLink, candidateLink } = { incidentLink: (s: string, id: string) => `/app/workspaces/${s}/incidents/${id}`, candidateLink: (s: string, id: string) => `/app/workspaces/${s}/incidents/detected/${id}` };
-  void candidateLink;
   switch (plan.kind) {
     case "greeting":
       return {
         body: ctx.empty
-          ? `Hey — Meros here. All quiet: no active incidents and no customer reports to dig into yet. Ask me "what's happening?" anytime.`
-          : `Hey — Meros here. ${ctx.incidents.length > 0 ? `Keeping an eye on ${ctx.incidents.length === 1 ? "one incident" : `${ctx.incidents.length} incidents`} right now.` : "Nothing on fire right now."} Ask me what's happening or what needs attention.`,
+          ? `Hey, Meros here.\n\nThings are quiet in ${ctx.workspaceName} — no customer conversations or open issues here yet.\n\nAsk me "what's happening?" anytime.`
+          : `Hey, Meros here.\n\n${ctx.incidents.length > 0 ? `Keeping an eye on ${ctx.incidents.length === 1 ? "one open issue" : `${ctx.incidents.length} open issues`} right now.` : "Nothing urgent on the board right now."}\n\nAsk me what's happening or what needs attention.`,
         link: null,
       };
     case "status":
     case "worry": {
       if (ctx.empty) {
         return {
-          body: `All quiet. There aren't any active incidents right now, and we haven't received customer reports to investigate yet. Nothing needs you — I'll flag it here if that changes.`,
+          body: `All quiet in ${ctx.workspaceName}.\n\nNo open issues, and no customer reports to look into yet. That's only what has been reported so far.`,
           link: null,
         };
       }
-      const bits: string[] = [];
-      if (ctx.stats) bits.push(statsLine(ctx.workspaceName, ctx.stats));
+      const paras: string[] = [];
+      if (ctx.stats) paras.push(statsLine(ctx.workspaceName, ctx.stats));
       if (ctx.incidents.length > 0) {
         const top = ctx.incidents[0];
-        bits.push(
+        paras.push(
           plan.kind === "worry"
             ? `Worth a look: "${top.title.slice(0, 80)}" [${top.status}, ${top.severity}] — ${top.customers} customers across ${top.conversations} conversations. #${short(top.id)}`
-            : `Active: ${ctx.incidents.map((i) => `"${i.title.slice(0, 60)}" #${short(i.id)}`).join(", ")}.`,
+            : `Open now: ${ctx.incidents.map((i) => `"${i.title.slice(0, 60)}" #${short(i.id)}`).join(", ")}.`,
         );
       } else {
-        bits.push("No active incidents.");
+        paras.push("No open issues.");
       }
       const pending = ctx.candidates.length;
-      if (pending > 0) bits.push(`${pending} candidate${pending === 1 ? "" : "s"} awaiting review (all unconfirmed).`);
+      if (pending > 0) paras.push(`${pending} possible recurring problem${pending === 1 ? "" : "s"} waiting for review (all unconfirmed).`);
       if (plan.kind === "worry" && ctx.incidents.length === 0 && ctx.candidates.length === 0) {
-        bits.push("Nothing looks worrying — no incidents, no candidates waiting.");
+        paras.push("Nothing looks worrying — no open issues, nothing waiting.");
       }
-      return { body: bits.join(" "), link: ctx.incidents.length > 0 ? incidentLink(slug, ctx.incidents[0].id) : null };
+      return { body: paras.join("\n\n"), link: ctx.incidents.length > 0 ? incidentLink(slug, ctx.incidents[0].id) : null };
     }
     case "attention":
     case "next_steps": {
       if (ctx.empty) {
-        return { body: `Nothing needs you right now — no incidents, no candidates awaiting review. Enjoy the quiet; I'll flag anything new here.`, link: null };
+        return { body: `Nothing needs you right now — no open issues, nothing waiting for review.\n\nEnjoy the quiet.`, link: null };
       }
       const items = ctx.decisions.slice(0, 3);
       const body =
         items.length > 0
-          ? `What needs you: ${items.join(" · ")} Decisions happen in the web console — I keep things read-only here.`
+          ? `What needs you:\n${items.join("\n")}\n\nYou'll decide these in the staff console — I keep things read-only here.`
           : ctx.incidents.length > 0
-            ? `Top of the pile: "${ctx.incidents[0].title.slice(0, 80)}" [${ctx.incidents[0].status}] — review it in the console when you get a moment.`
+            ? `Top of the pile: "${ctx.incidents[0].title.slice(0, 80)}" [${ctx.incidents[0].status}]\n\nWorth a look in the staff console when you get a moment.`
             : `Nothing outstanding — no review work queued.`;
       return { body, link: `/app/workspaces/${slug}/incidents` };
     }
     case "latest": {
-      if (ctx.empty) return { body: `No incidents yet — nothing has come in to investigate. I'll surface the latest here the moment something does.`, link: null };
+      if (ctx.empty) return { body: `No open issues yet — nothing has come in to investigate.\n\nAsk me again later and I'll check what's live.`, link: null };
       if (ctx.ambiguous && ctx.ambiguous.length > 0) {
         return {
-          body: `A couple of fresh alerts came in — which one? ${ctx.ambiguous.map((o) => `"${o.title.slice(0, 50)}" #${short(o.id)}`).join(" or ")} Just reply with the reference.`,
+          body: `A couple of fresh reports came in — which one?\n\n${ctx.ambiguous.map((o) => `"${o.title.slice(0, 50)}" #${short(o.id)}`).join(" or ")}\n\nJust reply with the reference.`,
           link: null,
         };
       }
@@ -737,56 +741,56 @@ export function fallbackReply(ctx: ConverseContext, plan: ConversePlan, slug: st
       if (ctx.incidents.length > 0) {
         const top = ctx.incidents[0];
         return {
-          body: `Latest incident: "${top.title.slice(0, 100)}" [${top.status}, ${top.severity}] — ${top.customers} customers, ${top.conversations} conversations. #${short(top.id)}`,
+          body: `Latest issue: "${top.title.slice(0, 100)}" [${top.status}, ${top.severity}] — ${top.customers} customers, ${top.conversations} conversations. #${short(top.id)}`,
           link: incidentLink(slug, top.id),
         };
       }
       const c = ctx.candidates[0];
       return {
-        body: `No confirmed incidents — newest candidate (UNCONFIRMED): "${c.title.slice(0, 100)}" — ${c.conversations} convos, ${c.customers} customers. #${short(c.id)} Nothing here is confirmed yet.`,
-        link: `/app/workspaces/${slug}/incidents/detected/${c.id}`,
+        body: `No confirmed issues — newest possible problem (unconfirmed): "${c.title.slice(0, 100)}" — ${c.conversations} conversations, ${c.customers} customers. #${short(c.id)}\n\nNothing here is confirmed yet.`,
+        link: candidateLink(slug, c.id),
       };
     }
     case "why_related":
     case "sofar":
     case "seen_before": {
-      if (ctx.empty) return { body: `Nothing to dig into yet — no incidents or candidates on record. As soon as reports come in I'll group and summarize them here.`, link: null };
+      if (ctx.empty) return { body: `Nothing to dig into yet — no issues or reports on record.\n\nAs soon as reports come in I'll group and summarize them here.`, link: null };
       if (ctx.ambiguous && ctx.ambiguous.length > 0) {
         return {
-          body: `A couple of things match — which one do you mean? ${ctx.ambiguous.map((o) => `"${o.title.slice(0, 50)}" #${short(o.id)}`).join(" or ")} Just reply with the reference.`,
+          body: `A couple of things match — which one do you mean?\n\n${ctx.ambiguous.map((o) => `"${o.title.slice(0, 50)}" #${short(o.id)}`).join(" or ")}\n\nJust reply with the reference.`,
           link: null,
         };
       }
       if (!ctx.selected || !ctx.selected.detail) {
         return {
-          body: `Which one should I look at? ${[...ctx.incidents, ...ctx.candidates].slice(0, 3).map((o) => `"${o.title.slice(0, 50)}" #${short(o.id)}`).join(" · ")} Reply with the reference and I'll dig in.`,
+          body: `Which one should I look at?\n\n${[...ctx.incidents, ...ctx.candidates].slice(0, 3).map((o) => `"${o.title.slice(0, 50)}" #${short(o.id)}`).join("\n")}\n\nReply with the reference and I'll dig in.`,
           link: null,
         };
       }
       const s = ctx.selected;
-      const link = s.option.kind === "incident" ? incidentLink(slug, s.option.id) : `/app/workspaces/${slug}/incidents/detected/${s.option.id}`;
+      const link = s.option.kind === "incident" ? incidentLink(slug, s.option.id) : candidateLink(slug, s.option.id);
       return { body: `${s.detail} #${s.shortRef}`, link };
     }
     case "other": {
       if (ctx.ambiguous && ctx.ambiguous.length > 0) {
         return {
-          body: `A few to choose from — which one? ${ctx.ambiguous.map((o) => `"${o.title.slice(0, 50)}" #${short(o.id)}`).join(" · ")}`,
+          body: `A few to choose from — which one?\n\n${ctx.ambiguous.map((o) => `"${o.title.slice(0, 50)}" #${short(o.id)}`).join("\n")}`,
           link: null,
         };
       }
       if (ctx.selected?.detail) {
         const s = ctx.selected;
-        const link = s.option.kind === "incident" ? incidentLink(slug, s.option.id) : `/app/workspaces/${slug}/incidents/detected/${s.option.id}`;
-        return { body: `The other one: ${s.detail} #${s.shortRef}`, link };
+        const link = s.option.kind === "incident" ? incidentLink(slug, s.option.id) : candidateLink(slug, s.option.id);
+        return { body: `The other one:\n\n${s.detail} #${s.shortRef}`, link };
       }
       return { body: `There's just the one live item right now — reply "incidents" and I'll walk through it.`, link: null };
     }
     case "explain": {
       if (ctx.lastAssistant) {
         const first = ctx.lastAssistant.split(/(?<=[.!?])\s/).slice(0, 2).join(" ").slice(0, 400);
-        return { body: `Short version: ${first}`, link: null };
+        return { body: `Short version:\n\n${first}`, link: null };
       }
-      return { body: `Happy to explain — which part should I unpack? Name the incident or question and I'll put it plainly.`, link: null };
+      return { body: `Happy to explain — which part should I unpack?\n\nName the issue or question and I'll put it plainly.`, link: null };
     }
     case "action_request": {
       const topic = (plan.topic ?? "").toLowerCase();
@@ -810,8 +814,8 @@ export function fallbackReply(ctx: ConverseContext, plan: ConversePlan, slug: st
     default:
       return {
         body: ctx.empty
-          ? `I'm with you — and all quiet here: no incidents, no reports to dig into yet. Try "what's happening?" or "what do you keep an eye on?"`
-          : `I'm with you. I can share what's happening, what's waiting on review, or dig into an incident — try "what needs my attention?"`,
+          ? `I'm with you — and all quiet here: no open issues, no reports to dig into yet.\n\nTry "what's happening?"`
+          : `I'm with you. I can share what's happening, what's waiting on review, or dig into an issue.\n\nTry "what needs my attention?"`,
         link: null,
       };
   }

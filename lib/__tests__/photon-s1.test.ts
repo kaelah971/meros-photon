@@ -66,13 +66,14 @@ describe("stats reply", () => {
       sharedFixes: 4,
     });
     expect(text).toContain("Acme Support");
-    expect(text).toContain("12 conversations");
-    expect(text).toContain("1 customer");
+    expect(text).toContain("all-time totals");
+    expect(text).toContain("12 customer conversations");
+    expect(text).toContain("1 customer,");
     expect(text).toContain("3 open issues");
-    expect(text).toContain("0 Fix Cards waiting for review");
-    expect(text).toContain("4 shared fixes");
+    expect(text).toContain("Nothing waiting for review.");
+    expect(text).toContain("4 shared fixes saved.");
   });
-  it("singularizes every line at one", () => {
+  it("singularizes at one", () => {
     const text = formatStatsReply("W", {
       openIssues: 1,
       customers: 1,
@@ -80,10 +81,22 @@ describe("stats reply", () => {
       pendingFixCards: 1,
       sharedFixes: 1,
     });
-    expect(text).toContain("1 conversation\n");
-    expect(text).toContain("1 open issue\n");
-    expect(text).toContain("1 Fix Card waiting for review");
-    expect(text).toContain("1 shared fix\n");
+    expect(text).toContain("1 customer conversation,");
+    expect(text).toContain("1 open issue.");
+    expect(text).toContain("1 thing waiting for review.");
+    expect(text).toContain("1 shared fix saved.");
+  });
+  it("empty workspace gets the quiet message, never a count dump", () => {
+    const text = formatStatsReply("Northstar Support", {
+      openIssues: 0,
+      customers: 0,
+      conversations: 0,
+      pendingFixCards: 0,
+      sharedFixes: 0,
+    });
+    expect(text).toContain("Things are quiet in Northstar Support.");
+    expect(text).toContain("aren't any customer conversations");
+    expect(text).toContain("Nothing is waiting for your review.");
   });
 });
 
@@ -214,7 +227,7 @@ describe("operator authorization", () => {
     expect(res.action).toBe("stats");
     expect(posts).toHaveLength(1);
     expect(posts[0]).toContain("Acme Support");
-    expect(posts[0]).toContain("21 conversations");
+    expect(posts[0]).toContain("21 customer conversations");
     expect(posts[0]).toContain("7 open issues");
   });
 

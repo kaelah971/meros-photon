@@ -110,6 +110,8 @@ export type OperatorResult =
   | { action: "matches"; replyText: string }
   | { action: "decisions"; replyText: string }
   | { action: "clarify"; replyText: string }
+  | { action: "at-menu"; replyText: string }
+  | { action: "at-memory"; replyText: string }
   | { action: "unavailable"; replyText: string };
 
 const STATS_RE = /^\s*stats(?:\s+([A-Za-z0-9-]{2,32}))?\s*$/i;
@@ -128,6 +130,51 @@ export function parsePairIntent(text: string): { code: string } | null {
   if (!m) return null;
   return { code: m[1].toUpperCase() };
 }
+
+export type AtIntent =
+  | { kind: "menu" }
+  | { kind: "status" }
+  | { kind: "alerts" }
+  | { kind: "incidents" }
+  | { kind: "reviews" }
+  | { kind: "memory" };
+
+/** `@` shortcut intent (`@`, `@status`, `@alerts`, …). Pure. Null when no `@` prefix. */
+export function parseAtIntent(text: string): AtIntent | null {
+  const t = text.trim();
+  if (!t.startsWith("@")) return null;
+  const sub = t.slice(1).trim().toLowerCase().replace(/\s+/g, "");
+  switch (sub) {
+    case "":
+    case "help":
+    case "menu":
+      return { kind: "menu" };
+    case "status":
+      return { kind: "status" };
+    case "alerts":
+      return { kind: "alerts" };
+    case "incidents":
+      return { kind: "incidents" };
+    case "reviews":
+    case "decisions":
+    case "todo":
+      return { kind: "reviews" };
+    case "memory":
+    case "fixes":
+      return { kind: "memory" };
+    default:
+      return { kind: "menu" };
+  }
+}
+
+export const AT_MENU_TEXT =
+  `Meros shortcuts \u2014 or just ask in plain words, I understand those too:\n` +
+  `@status \u2014 workspace overview\n` +
+  `@alerts \u2014 possible recurring problems\n` +
+  `@incidents \u2014 active incidents\n` +
+  `@reviews \u2014 pending operator decisions\n` +
+  `@memory \u2014 historical fixes\n` +
+  `@help \u2014 show this menu`;
 
 function plural(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`;
@@ -301,6 +348,13 @@ export async function handleOperatorMessage(
     // Address recording is best-effort; the command reply still sends.
   }
 
+  // `@` shortcuts ride the same authenticated router: binding + staff gate
+  // apply inside handleAtIntent, exactly like the investigate path.
+  const at = parseAtIntent(text);
+  if (at) {
+    return handleAtIntent(deps, ctx, binding, at);
+  }
+
   const stats = parseStatsIntent(text);
   if (!stats) {
     const { parseRouterIntent } = await import("./investigate");
@@ -446,6 +500,60 @@ async function handleInvestigateIntent(
     if (e instanceof Error && e.message === "photon send failed") throw e;
     return { action: "unavailable", replyText: INVESTIGATE_UNAVAILABLE_TEXT };
   }
+}
+
+/**
+ * S15C.2 `@` shortcuts: a lightweight secondary interface inside the
+ * existing router. Binding is already resolved by the caller; staff is
+ * re-checked here before any workspace read, exactly like the investigate
+ * and conversational paths. Aliases delegate to handleInvestigateIntent
+ * (same read models, same replies); `@memory` points at the authenticated
+ * Fix Cards library instead of inventing results. Read-only: nothing here
+ * mutates, approves, publishes, or closes anything.
+ */
+async function handleAtIntent(
+  deps: OperatorDeps,
+  ctx: { inboundId: string; workspaceId: string | null; bindingId: string | null; threadId: string | null },
+  binding: OperatorBinding,
+  at: AtIntent,
+): Promise<OperatorResult> {
+  try {
+    await deps.checkStaff(binding.operatorUserId, binding.workspaceId);
+  } catch {
+    await replyOnce(deps, { ...ctx, workspaceId: binding.workspaceId }, DENIED_TEXT, "rejected");
+    return { action: "denied", replyText: DENIED_TEXT };
+  }
+  const ws = binding.workspaceId;
+  const linkCtx = { ...ctx, workspaceId: ws, bindingId: binding.id };
+  if (at.kind === "alerts") return handleInvestigateIntent(deps, ctx, binding, { kind: "alerts" });
+  if (at.kind === "incidents") return handleInvestigateIntent(deps, ctx, binding, { kind: "incidents" });
+  if (at.kind === "reviews") return handleInvestigateIntent(deps, ctx, binding, { kind: "decisions" });
+  if (at.kind === "status") {
+    let snapshot: StatsSnapshot;
+    let displayName = "workspace";
+    try {
+      snapshot = await deps.readStats(ws);
+      const mine = await deps.listWorkspaces(binding.operatorUserId);
+      displayName = mine.find((w) => w.id === ws)?.name ?? displayName;
+    } catch {
+      return { action: "degraded", replyText: DEGRADED_TEXT };
+    }
+    const replyText = formatStatsReply(displayName, snapshot);
+    await replyOnce(deps, linkCtx, replyText, "replied");
+    return { action: "stats", replyText };
+  }
+  if (at.kind === "memory") {
+    const slug = await deps.investigate?.workspaceSlug(ws).catch(() => null);
+    if (!slug) return { action: "unavailable", replyText: INVESTIGATE_UNAVAILABLE_TEXT };
+    const replyText =
+      `Past fixes the team verified live in your Fix Cards library \u2014 open it here (staff sign-in):\n` +
+      `/app/workspaces/${slug}/fix-cards\n` +
+      `I can't list private customer history in chat, but anything verified is saved there.`;
+    await replyOnce(deps, linkCtx, replyText, "replied");
+    return { action: "at-memory", replyText };
+  }
+  await replyOnce(deps, linkCtx, AT_MENU_TEXT, "replied");
+  return { action: "at-menu", replyText: AT_MENU_TEXT };
 }
 
 /**

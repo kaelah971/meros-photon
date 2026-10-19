@@ -121,7 +121,7 @@ type PhotonAdapter = ReturnType<typeof createiMessageAdapter>;
 let cached: PhotonChat | null = null;
 let cachedAdapter: PhotonAdapter | null = null;
 
-function realDeps(): OperatorDeps {
+export function realDeps(): OperatorDeps {
   return {
     findBinding: async (senderHash) => {
       const { resolveActiveBinding } = await import("./bindings");

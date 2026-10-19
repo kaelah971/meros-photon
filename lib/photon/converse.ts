@@ -605,6 +605,9 @@ export function factsText(ctx: ConverseContext, plan: ConversePlan, slug: string
     return lines.join("\n");
   }
   if (ctx.stats) lines.push(`STATS: ${statsLine(ctx.workspaceName, ctx.stats)}`);
+  if (plan.kind === "status" || plan.kind === "worry" || plan.kind === "attention") {
+    lines.push("TIME: the stats above are all-time workspace totals, not today's activity — never present them as happening today. Only describe today specifically when dated records support it.");
+  }
   if (ctx.incidents.length > 0) {
     lines.push(
       `ACTIVE INCIDENTS (${ctx.incidents.length}): ` +

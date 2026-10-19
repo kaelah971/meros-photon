@@ -146,7 +146,7 @@ export async function addUserMessage(input: {
   content: string;
   clientId?: string | null;
   attachments?: { filename: string; mimeType: string; kind: string }[];
-}): Promise<{ id: string; deduped: boolean }> {
+}): Promise<{ id: string; deduped: boolean; clientId: string }> {
   const sql = await requireSql();
   const clientId = input.clientId?.trim() || randomUUID();
   const rows = (await sql`
@@ -157,14 +157,47 @@ export async function addUserMessage(input: {
   `) as unknown as { id: string }[];
   if (rows[0]) {
     await sql`update conversations set last_message_at = now(), updated_at = now() where id = ${input.conversationId}`;
-    return { id: rows[0].id, deduped: false };
+    return { id: rows[0].id, deduped: false, clientId };
   }
   const existing = (await sql`
     select id from messages
     where conversation_id = ${input.conversationId} and client_id = ${clientId} limit 1
   `) as unknown as { id: string }[];
   if (!existing[0]) throw new Error("message persist failed");
-  return { id: existing[0].id, deduped: true };
+  return { id: existing[0].id, deduped: true, clientId };
+}
+
+/**
+ * Find one persisted message by its idempotency key (any role). Lets a
+ * retried answer resume an already-stored assistant reply instead of
+ * generating (and billing/storing) a duplicate after an ambiguous outcome.
+ */
+export async function findMessageByClientId(
+  conversationId: string,
+  clientId: string,
+): Promise<{
+  id: string;
+  role: string;
+  content: string;
+  provenance: { plane: string; text: string; blobId: string; distance: number }[];
+} | null> {
+  const sql = await requireSql();
+  const rows = (await sql`
+    select id, role, content, memory_provenance
+    from messages
+    where conversation_id = ${conversationId} and client_id = ${clientId}
+    limit 1
+  `) as unknown as { id: string; role: string; content: string; memory_provenance: unknown }[];
+  const row = rows[0];
+  if (!row) return null;
+  let provenance: { plane: string; text: string; blobId: string; distance: number }[] = [];
+  try {
+    const raw = typeof row.memory_provenance === "string" ? JSON.parse(row.memory_provenance) : row.memory_provenance;
+    if (Array.isArray(raw)) provenance = raw as typeof provenance;
+  } catch {
+    provenance = [];
+  }
+  return { id: row.id, role: row.role, content: row.content, provenance };
 }
 
 export async function addAssistantMessage(input: {

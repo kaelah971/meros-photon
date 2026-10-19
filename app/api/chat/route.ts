@@ -48,7 +48,7 @@ export async function POST(req: Request) {
   // Product identity is the Better Auth session. Client supplies only the
   // workspace route context — never customerId, accessCode, or namespaces.
   // conversationId (when present) is verified against that identity below.
-  let body: { workspaceSlug?: unknown; message?: unknown; history?: unknown; conversationId?: unknown; clientMessageId?: unknown; attachments?: unknown }; // NOTE: P7 product flow uses session auth (legacy /chat access-code path is dev-only).
+  let body: { workspaceSlug?: unknown; message?: unknown; history?: unknown; conversationId?: unknown; clientMessageId?: unknown; answerClientId?: unknown; attachments?: unknown }; // NOTE: P7 product flow uses session auth (legacy /chat access-code path is dev-only).
   try {
     body = await req.json();
   } catch {
@@ -128,6 +128,7 @@ export async function POST(req: Request) {
   // generation, so a model failure can never lose it. Idempotent on
   // clientMessageId — a retried send resumes instead of duplicating.
   let userMessageId: string | null = null;
+  let userClientId: string | null = null;
   try {
     const stored = await addUserMessage({
       conversationId,
@@ -136,6 +137,7 @@ export async function POST(req: Request) {
       attachments: attachmentMetas,
     });
     userMessageId = stored.id;
+    userClientId = stored.clientId;
   } catch (e) {
     return NextResponse.json(
       { ok: false, error: e instanceof Error ? e.message : "message persist failed", conversationId },
@@ -162,7 +164,44 @@ export async function POST(req: Request) {
     );
   }
 
-  // Compact retrieval query: symptom/error/product substance, filler removed.
+  // Retry safety: the assistant reply carries its own idempotency key, so
+  // a retried answer can never store twice. If an earlier attempt already
+  // persisted the reply (ambiguous outcome — response lost, write kept),
+  // resume it verbatim instead of regenerating.
+  const rawAnswerKey = typeof body.answerClientId === "string" ? body.answerClientId.trim() : "";
+  const answerClientId = /^[A-Za-z0-9:_-]{1,128}$/.test(rawAnswerKey)
+    ? rawAnswerKey
+    : `${userClientId}:answer`;
+  try {
+    const { findMessageByClientId } = await import("@/lib/support-ops");
+    const prior = await findMessageByClientId(conversationId, answerClientId);
+    if (prior && prior.role === "assistant" && prior.content) {
+      const planes = new Set(prior.provenance.map((p) => p.plane));
+      return NextResponse.json({
+        ok: true,
+        answer: prior.content,
+        resumed: true,
+        resolutionDetected: false,
+        memoryStatus: { private: "resumed", shared: "resumed", knowledge: "resumed" },
+        degradedMemory: false,
+        userPreview: previewUserId(tenant.customerId),
+        workspace: tenant.workspace,
+        memoryUsed: {
+          private: planes.has("private"),
+          shared: planes.has("shared"),
+          knowledge: planes.has("knowledge"),
+        },
+        provenance: prior.provenance,
+        historyTurns: history.length,
+        conversation: { id: conversationId, status: conversationStatus },
+        issue: { status: conversationStatus === "resolved" ? "resolved" : "open" },
+        fixCard: null,
+        attachments: attachmentMetas,
+      });
+    }
+  } catch (e) {
+    console.log(`[chat] resume lookup failed (fail-open to fresh answer): ${e instanceof Error ? e.message : e}`);
+  }
   const recallQuery = buildRecallQuery(message, history);
 
   // Dual-plane recall, each plane independently bounded. One stalled plane
@@ -234,15 +273,17 @@ export async function POST(req: Request) {
     console.log(`[chat] gemini ok in ${Date.now() - tGemini}ms`);
   } catch (e) {
     // The user complaint is ALREADY persisted above: the conversation stays
-    // open and nothing is lost. Report honestly with the conversation id.
-    if (e instanceof GeminiNotConfiguredError) {
-      return NextResponse.json(
-        { ok: false, error: e.message, needed: ["GEMINI_API_KEY"], conversationId },
-        { status: 503 },
-      );
-    }
+    // open and nothing is lost. Provider detail stays server-side (logged);
+    // the customer gets a friendly, retryable message — never raw errors.
+    console.log(`[chat] answer generation failed (question persisted): ${e instanceof Error ? e.message : e}`);
     return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : "answer generation failed", conversationId },
+      {
+        ok: false,
+        error: "I couldn't answer just now. Your message is saved. Please retry.",
+        code: "answer_failed",
+        retryable: true,
+        conversationId,
+      },
       { status: 502 },
     );
   }
@@ -256,10 +297,13 @@ export async function POST(req: Request) {
   }));
 
   // Persist the successful answer + its provenance before responding.
+  // Idempotent on the answer key: an ambiguous retry resumes (above) and
+  // can never store a second assistant reply for the same turn.
   try {
     await addAssistantMessage({
       conversationId,
       content: answer,
+      clientId: answerClientId,
       model: getPrimaryModel(),
       privateUsed: used.some((m) => m.plane === "private"),
       sharedUsed: used.some((m) => m.plane === "shared"),

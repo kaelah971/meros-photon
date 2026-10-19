@@ -4,7 +4,22 @@ const RETRYABLE_CODES = new Set([408, 429, 500, 502, 503, 504]);
 export const MAX_ATTEMPTS = 3;
 const BASE_DELAY_MS = 800;
 
+/**
+ * SDK attempt timeouts surface as abort rejections (e.g. the GenAI SDK's
+ * own AbortController: "This operation was aborted"), not HTTP statuses.
+ * Without this classification, a slow-but-transient model call fails over
+ * to nothing and its raw abort text leaks to the UI. Aborts and transport
+ * timeouts are transient by nature: safe to fail over / retry bounded.
+ */
+export function isAbortLike(e: unknown): boolean {
+  const name = e instanceof Error ? e.name : "";
+  if (name === "AbortError" || /abort/i.test(name)) return true;
+  const msg = e instanceof Error ? e.message : String(e);
+  return /abort|timed\s*out|\btimeout\b|ETIMEDOUT|ECONNRESET|EAI_AGAIN|socket hang up/i.test(msg);
+}
+
 export function isRetryable(e: unknown): boolean {
+  if (isAbortLike(e)) return true;
   const msg = e instanceof Error ? e.message : String(e);
   const m = msg.match(/"code"\s*:\s*(\d{3})/) || msg.match(/\b(50[0234]|429|408)\b/);
   return m ? RETRYABLE_CODES.has(Number(m[1])) : false;

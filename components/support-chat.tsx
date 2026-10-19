@@ -342,6 +342,15 @@ export function SupportChat({
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
   const [conversationId, setConversationId] = useState<string | null>(null);
+  // Failed-turn keys: preserved so "Retry answer" reuses the ORIGINAL
+  // conversation + idempotency keys instead of duplicating the question.
+  const [failedTurn, setFailedTurn] = useState<{
+    text: string;
+    clientMessageId: string;
+    answerClientId: string;
+    conversationId: string | null;
+  } | null>(null);
+  const [retrying, setRetrying] = useState(false);
   const [resolvedCard, setResolvedCard] = useState<{ candidateText?: string } | null>(null);
   const [resolving, setResolving] = useState(false);
   const [historyList, setHistoryList] = useState<
@@ -589,12 +598,16 @@ export function SupportChat({
         ? [{ role: "user", text: m.text }]
         : [{ role: "assistant", text: m.text }],
     );
-    // Idempotency key for this turn: a retried send resumes the same
-    // persisted user message instead of duplicating it.
-    const clientMessageId =
+    // Idempotency keys for this turn: a retried send resumes the same
+    // persisted user message AND the same assistant reply instead of
+    // duplicating either. Both survive failures via failedTurn below.
+    const newId = () =>
       typeof crypto !== "undefined" && "randomUUID" in crypto
         ? crypto.randomUUID()
         : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const clientMessageId = newId();
+    const answerClientId = newId();
+    setFailedTurn({ text, clientMessageId, answerClientId, conversationId });
     const outgoingMetas = outgoing.map((a) => ({ filename: a.filename, kind: a.kind }));
     setMessages((prev) => [...prev, { kind: "user", text, attachments: outgoingMetas }]);
     setDraft("");
@@ -609,6 +622,7 @@ export function SupportChat({
             history,
             conversationId,
             clientMessageId,
+            answerClientId,
             attachments: outgoing.map((a) => ({
               filename: a.filename,
               mimeType: a.mimeType,
@@ -620,9 +634,16 @@ export function SupportChat({
       });
       const data = await res.json();
       if (!data.ok) {
+        // The question is already persisted server-side: keep the turn keys
+        // and adopt the server's conversation id so Retry reuses them.
+        if (typeof data.conversationId === "string" && data.conversationId) {
+          setConversationId(data.conversationId);
+          setFailedTurn((prev) => (prev ? { ...prev, conversationId: data.conversationId } : prev));
+        }
         setError(data.error ?? "Something went wrong. Try again.");
         return;
       }
+      setFailedTurn(null);
       // Clear pending attachments only after a successful send.
       clearPending();
       const assistantIdx = messages.length + 1;
@@ -678,6 +699,72 @@ export function SupportChat({
       setSending(false);
     }
   }, [draft, sending, workspaceSlug, messages, conversationId, identityBody, pending, clearPending]);
+
+  // Retry ONLY the failed generation: same conversation, same keys, no new
+  // user bubble (it's already shown + persisted). The server resumes an
+  // already-stored reply when the first attempt ambiguously succeeded.
+  const retryAnswer = useCallback(async () => {
+    const turn = failedTurn;
+    if (!turn || sending || retrying || !workspaceSlug.trim()) return;
+    setRetrying(true);
+    setError("");
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(
+          identityBody({
+            message: turn.text,
+            history: [],
+            conversationId: turn.conversationId,
+            clientMessageId: turn.clientMessageId,
+            answerClientId: turn.answerClientId,
+            attachments: [],
+          }),
+        ),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        if (typeof data.conversationId === "string" && data.conversationId) {
+          setConversationId(data.conversationId);
+          setFailedTurn((prev) => (prev ? { ...prev, conversationId: data.conversationId } : prev));
+        }
+        setError(data.error ?? "Something went wrong. Try again.");
+        return;
+      }
+      setFailedTurn(null);
+      clearPending();
+      const assistantIdx = messages.length;
+      setMessages((prev) => [
+        ...prev,
+        {
+          kind: "assistant",
+          text: data.answer,
+          provenance: data.provenance ?? [],
+          memoryUsed: data.memoryUsed ?? { private: false, shared: false },
+          historyTurns: data.historyTurns ?? 0,
+          degradedMemory: data.degradedMemory === true,
+          historySnapshot: [],
+          attachmentNote: null,
+        },
+      ]);
+      scrollDown();
+      if (data.conversation?.id) setConversationId(data.conversation.id);
+      if (data.workspace?.name) setWorkspaceName(data.workspace.name);
+      void captureTurn(workspaceSlug, turn.text, data.answer, [], []).then((note) => {
+        if (!note) return;
+        setMessages((prev) =>
+          prev.map((m, idx) =>
+            idx === assistantIdx && m.kind === "assistant" ? { ...m, captureNote: note } : m,
+          ),
+        );
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Network error. Try again.");
+    } finally {
+      setRetrying(false);
+    }
+  }, [failedTurn, sending, retrying, workspaceSlug, messages.length, identityBody, clearPending, captureTurn]);
 
   const runCompare = useCallback(async (idx: number) => {
     // Controlled rerun: same user message + same conversation context, but
@@ -1186,9 +1273,19 @@ export function SupportChat({
           <p className="text-sm text-neutral-500">Meros is recalling memory and answering…</p>
         )}
         {error && (
-          <p className="rounded-md border border-red-900 bg-red-950/40 px-4 py-2.5 text-sm text-red-300">
-            {error}
-          </p>
+          <div className="rounded-md border border-red-900 bg-red-950/40 px-4 py-2.5 text-sm text-red-300">
+            <p>{error}</p>
+            {failedTurn && !sending && !retrying && (
+              <button
+                type="button"
+                onClick={() => void retryAnswer()}
+                className="mt-2 rounded-md bg-[#77FF75] px-3 py-1.5 text-xs font-medium text-neutral-950 hover:bg-emerald-400"
+              >
+                Retry answer
+              </button>
+            )}
+            {retrying && <p className="mt-1 text-xs text-neutral-400">Retrying your saved message…</p>}
+          </div>
         )}
         <div ref={bottomRef} />
       </div>

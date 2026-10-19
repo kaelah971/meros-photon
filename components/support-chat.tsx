@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { parseBlocks, type BlockNode, type InlineNode } from "@/lib/markdown";
 import { recordEvidence, shortBlob } from "@/lib/evidence";
 import { authClient } from "@/lib/better-auth-client";
@@ -229,6 +229,8 @@ function CompareCard({
   original: Extract<Msg, { kind: "assistant" }>;
   baseline: string;
 }) {
+  const [open, setOpen] = useState(true);
+  const bodyId = useId();
   const priv = original.provenance.filter((p) => p.plane === "private");
   const shared = original.provenance.filter((p) => p.plane === "shared");
   const know = original.provenance.filter((p) => p.plane === "knowledge");
@@ -238,9 +240,18 @@ function CompareCard({
   if (know.length > 0) used.push("product knowledge");
   return (
     <div className="mt-2 overflow-hidden rounded-md border border-[rgba(119,255,117,0.25)]">
-      <p className="bg-[rgba(10,27,18,0.9)] px-3 py-1.5 text-[11px] font-medium uppercase tracking-wider text-neutral-300">
-        Memory on vs off — same question, same conversation context
-      </p>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-controls={bodyId}
+        className="flex w-full items-center justify-between gap-2 bg-[rgba(10,27,18,0.9)] px-3 py-1.5 text-left text-[11px] font-medium uppercase tracking-wider text-neutral-300 hover:text-neutral-100"
+      >
+        <span>Memory on vs off — same question, same conversation context</span>
+        <span aria-hidden className="shrink-0 text-[#9AFF8D]">{open ? "▾" : "▸"}</span>
+      </button>
+      {open && (
+      <div id={bodyId}>
       <div className="grid gap-px bg-[#0a140f] sm:grid-cols-2">
         <div className="bg-[#06100B] p-3">
           <p className="text-[11px] font-semibold text-[#77FF75]">WITH MEROS MEMORY</p>
@@ -280,6 +291,8 @@ function CompareCard({
           Built from actual recall provenance ({used.length > 0 ? used.join(" + ") : "none"} influenced the original).
         </p>
       </div>
+      </div>
+      )}
     </div>
   );
 }

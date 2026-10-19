@@ -44,6 +44,8 @@ export function KnowledgeManager({ workspaceSlug }: { workspaceSlug: string }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [editContent, setEditContent] = useState("");
+  const [indexNote, setIndexNote] = useState<string | null>(null);
+  const [retryId, setRetryId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -59,6 +61,39 @@ export function KnowledgeManager({ workspaceSlug }: { workspaceSlug: string }) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Drive a pending source to ready/failed with visible progress. The
+  // save itself already returned fast; this never blocks the list.
+  async function trackIndexing(id: string) {
+    const { pollKnowledgeIndex } = await import("./knowledge-index-client");
+    setRetryId(null);
+    setIndexNote("Knowledge saved. Preparing search…");
+    try {
+      const done = await pollKnowledgeIndex(workspaceSlug, id, {
+        onProgress: (p) => {
+          if (p.status === "pending" && p.chunksTotal > 0) {
+            setIndexNote(`Knowledge saved. Preparing search… (${p.chunksDone}/${p.chunksTotal})`);
+          }
+        },
+      });
+      if (done.status === "ready") {
+        setIndexNote("Knowledge ready.");
+      } else if (done.status === "failed") {
+        setIndexNote(null);
+        setRetryId(id);
+        setError(`Search indexing failed: ${done.error ?? "unknown error"}. Your text is saved — retry to resume.`);
+      } else {
+        setIndexNote(null);
+        setRetryId(id);
+        setError("Search indexing is still working. Retry to resume where it stopped — your text is saved.");
+      }
+    } catch (e) {
+      setIndexNote(null);
+      setRetryId(id);
+      setError(`Indexing interrupted: ${e instanceof Error ? e.message : "network error"}. Your text is saved — retry to resume.`);
+    }
+    await load();
+  }
 
   async function create() {
     setError("");
@@ -78,11 +113,15 @@ export function KnowledgeManager({ workspaceSlug }: { workspaceSlug: string }) {
         setError(data.error ?? "Could not save knowledge.");
         return;
       }
+      // A resumed in-flight save returns the existing source — never a duplicate.
+      const savedId = data.source?.id as string | undefined;
+      const savedStatus = data.source?.status as string | undefined;
       setTitle("");
       setContent("");
       setUrl("");
       setShowAdd(false);
       await load();
+      if (savedId && savedStatus === "pending") await trackIndexing(savedId);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Network error.");
     } finally {
@@ -106,6 +145,9 @@ export function KnowledgeManager({ workspaceSlug }: { workspaceSlug: string }) {
       }
       setEditingId(null);
       await load();
+      if (data.source?.status === "pending" && typeof data.source?.id === "string") {
+        await trackIndexing(data.source.id);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Network error.");
     } finally {
@@ -138,9 +180,15 @@ export function KnowledgeManager({ workspaceSlug }: { workspaceSlug: string }) {
       </p>
       {error && (
         <p role="alert" className="mt-2 text-xs text-red-300">
-          {error}
+          {error}{" "}
+          {retryId && (
+            <button onClick={() => void trackIndexing(retryId)} className="underline hover:text-red-200">
+              Retry indexing
+            </button>
+          )}
         </p>
       )}
+      {indexNote && <p className="mt-2 text-xs text-neutral-400">{indexNote}</p>}
       <div className="mt-3 flex flex-wrap gap-2">
         <button onClick={() => setShowAdd((v) => !v)} className="rounded-md bg-[#77FF75] px-4 py-2 text-xs font-medium text-neutral-950 hover:bg-emerald-400">
           {showAdd ? "Close" : "+ Add knowledge"}
@@ -196,7 +244,7 @@ export function KnowledgeManager({ workspaceSlug }: { workspaceSlug: string }) {
             </>
           )}
           <button onClick={() => void create()} disabled={busy} className={btnPrimary}>
-            {busy ? "Saving + indexing…" : "Save knowledge"}
+            {busy ? "Saving…" : "Save knowledge"}
           </button>
         </div>
       )}

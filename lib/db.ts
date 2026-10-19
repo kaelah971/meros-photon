@@ -429,6 +429,32 @@ export async function replaceKnowledgeChunks(input: {
   }
 }
 
+export async function listKnowledgeChunks(knowledgeId: string, workspaceId: string): Promise<KnowledgeChunkRow[]> {
+  const sql = await getSql();
+  if (!sql) return [];
+  return (await sql`
+    select id, knowledge_id, workspace_id, content, position, walrus_blob_id, created_at
+    from workspace_knowledge_chunks where knowledge_id = ${knowledgeId} and workspace_id = ${workspaceId} order by position asc
+  `) as unknown as KnowledgeChunkRow[];
+}
+
+/** Persist one indexed chunk (position-scoped upsert — resume-safe, single-writer). */
+export async function saveKnowledgeChunk(input: {
+  knowledgeId: string;
+  workspaceId: string;
+  content: string;
+  position: number;
+  blobId: string | null;
+}): Promise<void> {
+  const sql = await getSql();
+  if (!sql) throw new Error("database unavailable");
+  await sql`delete from workspace_knowledge_chunks where knowledge_id = ${input.knowledgeId} and position = ${input.position}`;
+  await sql`
+    insert into workspace_knowledge_chunks (knowledge_id, workspace_id, content, position, walrus_blob_id)
+    values (${input.knowledgeId}, ${input.workspaceId}, ${input.content}, ${input.position}, ${input.blobId})
+  `;
+}
+
 export function hashAccessCodeForDb(normalizedCode: string, salt: string): string {
   // Separate DB-level hash; the raw code is never stored.
   // eslint-disable-next-line @typescript-eslint/no-require-imports

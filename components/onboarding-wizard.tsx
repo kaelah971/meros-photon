@@ -41,14 +41,59 @@ export function OnboardingWizard() {
   const [siteUrl, setSiteUrl] = useState("");
   const [docsUrl, setDocsUrl] = useState("");
   const [knowledgeNote, setKnowledgeNote] = useState<string | null>(null);
+  const [failedJobs, setFailedJobs] = useState<string[]>([]);
 
-  async function postJson(url: string, body: unknown) {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    return { status: res.status, data: await res.json() };
+  // Bounded save: the server persists knowledge fast, but the request
+  // itself must never hang the UI — a timeout surfaces as a resumable
+  // error (the server reconciles identical retries, never duplicates).
+  async function postJson(url: string, body: unknown, timeoutMs = 30_000) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+        signal: ctrl.signal,
+      });
+      return { status: res.status, data: await res.json() };
+    } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") {
+        throw new Error("Request timed out — your save may have completed. Retry to resume it (no duplicates)." );
+      }
+      throw e;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // Background indexing for saved sources: step 04 stays reachable while
+  // pending; progress lands in the status line; failures offer a retry.
+  async function trackIndexing(slug: string, ids: string[]) {
+    const { pollKnowledgeIndex } = await import("./knowledge-index-client");
+    const failed: string[] = [];
+    for (const id of ids) {
+      try {
+        const done = await pollKnowledgeIndex(slug, id, {
+          onProgress: (p) => {
+            if (p.status === "pending" && p.chunksTotal > 0) {
+              setKnowledgeNote(`Knowledge saved. Preparing search… (${p.chunksDone}/${p.chunksTotal})`);
+            }
+          },
+        });
+        if (done.status !== "ready") failed.push(id);
+      } catch {
+        failed.push(id);
+      }
+    }
+    setFailedJobs(failed);
+    if (failed.length === 0) {
+      setKnowledgeNote((n) =>
+        n && n.startsWith("Knowledge saved") ? "Knowledge ready." : n,
+      );
+    } else {
+      setError("Search indexing needs another moment — your text is saved. Retry to resume.");
+    }
   }
 
   async function createOrg() {
@@ -109,28 +154,41 @@ export function OnboardingWizard() {
         ? { type: typeOverride ?? manualType, title: manualTitle, content: manualText }
         : { type: "website", url };
     const { data } = await postJson(`/api/workspaces/${ws.slug}/knowledge`, payload);
-    return data as { ok: boolean; error?: string; source?: { id: string; status: string } };
+    return data as { ok: boolean; error?: string; resumed?: boolean; source?: { id: string; status: string; chunksTotal?: number } };
   }
 
   async function submitKnowledge() {
     if (!ws) return;
     setError("");
+    setFailedJobs([]);
     setBusy(true);
+    const ids: string[] = [];
     const notes: string[] = [];
     try {
       if (manualText.trim().length >= 20) {
         const r = await saveKnowledge("manual");
-        notes.push(
-          r?.ok ? "Manual knowledge indexed." : `Manual knowledge failed: ${r?.error ?? "unknown"}.`,
-        );
+        if (r?.ok && r.source) {
+          ids.push(r.source.id);
+          notes.push("Manual knowledge saved.");
+        } else {
+          notes.push(`Manual knowledge failed: ${r?.error ?? "unknown"}.`);
+        }
       }
       for (const u of [siteUrl, docsUrl].map((s) => s.trim()).filter(Boolean)) {
         const r = await saveKnowledge("url", u);
-        notes.push(r?.ok ? `Imported ${u}.` : `Import failed for ${u}: ${r?.error ?? "unknown"}.`);
+        if (r?.ok && r.source) {
+          ids.push(r.source.id);
+          notes.push(`Imported ${u}.`);
+        } else {
+          notes.push(`Import failed for ${u}: ${r?.error ?? "unknown"}.`);
+        }
       }
       if (notes.length === 0) notes.push("Skipped — you can add knowledge later from the console.");
-      setKnowledgeNote(notes.join(" "));
+      // Step 04 is reachable immediately: saves are durable, indexing
+      // continues in the background and never blocks navigation.
+      setKnowledgeNote(ids.length > 0 ? "Knowledge saved. Preparing search…" : notes.join(" "));
       setStep(4);
+      if (ids.length > 0) void trackIndexing(ws.slug, ids);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Network error.");
     } finally {
@@ -305,6 +363,18 @@ export function OnboardingWizard() {
         <section className="mt-4 rounded-md border border-[rgba(119,255,117,0.3)] bg-[rgba(10,27,18,0.72)] p-4">
           <h2 className="font-display text-sm font-bold tracking-[0.2em] text-[#9AFF8D]">04 · READY</h2>
           {knowledgeNote && <p className="mt-2 text-xs text-neutral-400">{knowledgeNote}</p>}
+          {failedJobs.length > 0 && ws && (
+            <button
+              onClick={() => {
+                setError("");
+                setKnowledgeNote("Knowledge saved. Preparing search…");
+                void trackIndexing(ws.slug, failedJobs);
+              }}
+              className="mt-2 rounded-md border border-[rgba(119,255,117,0.25)] px-4 py-2 text-xs text-neutral-300 hover:border-[rgba(119,255,117,0.5)]"
+            >
+              Retry search indexing
+            </button>
+          )}
           <p className="mt-2 text-xs text-neutral-400">Customer support URL</p>
           <code className="mt-1 block truncate rounded bg-[#06100B] px-2 py-2 font-mono text-[12px] text-[#9AFF8D]">
             /support/{ws.slug}

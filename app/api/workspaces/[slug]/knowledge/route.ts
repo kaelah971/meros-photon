@@ -6,10 +6,8 @@ import {
   getKnowledgeSource,
   getOwnedWorkspace,
   listKnowledgeSources,
-  replaceKnowledgeChunks,
   updateKnowledgeSource,
 } from "@/lib/db";
-import { deriveKnowledgeNamespaceV2 } from "@/lib/tenant";
 import {
   KNOWLEDGE_TYPES,
   capCanonical,
@@ -18,7 +16,6 @@ import {
   validatePublicUrl,
   type KnowledgeType,
 } from "@/lib/knowledge";
-import { WalrusNotConfiguredError, rememberPrivate } from "@/lib/walrus";
 
 function err(e: unknown, fallback: string, status = 500) {
   const s =
@@ -70,39 +67,41 @@ function str(v: unknown, max: number): string | null {
 }
 
 /**
- * Index canonical text into the workspace knowledge namespace, chunk by
- * chunk, awaiting real Walrus completion per chunk. Returns only after
- * every chunk resolves: status is ready iff ALL chunks stored, failed
- * otherwise. Never reports ready early.
+ * Indexing runs separately (POST ../[id]/index, bounded batches) — this
+ * route only persists canonical text durably and returns fast, so long
+ * manuals can never wedge a serverless request. Reconcile-first: an
+ * explicit sourceId resumes that source; otherwise an identical
+ * pending/failed source is reused instead of duplicating on retry.
  */
-async function indexSource(
-  namespace: string,
-  knowledgeId: string,
-  workspaceId: string,
-  canonical: string,
-): Promise<{ ok: boolean; blobs: (string | null)[]; error?: string }> {
-  const chunks = chunkText(canonical).slice(0, 20);
-  const blobs: (string | null)[] = [];
-  for (let i = 0; i < chunks.length; i++) {
-    try {
-      const done = await rememberPrivate(namespace, `[KNOWLEDGE] ${chunks[i]}`, {
-        timeoutMs: 120_000,
-      });
-      blobs.push(done.blobId);
-    } catch (e) {
-      return {
-        ok: false,
-        blobs,
-        error: e instanceof Error ? e.message : "walrus write failed",
-      };
+function chunksTotalFor(canonical: string): number {
+  return chunkText(canonical).slice(0, 20).length;
+}
+
+async function reconcileSource(args: {
+  workspaceId: string;
+  sourceId: string | null;
+  type: string;
+  title: string;
+  canonical: string;
+}): Promise<{ id: string; status: string; chunksTotal: number; resumed: boolean } | null> {
+  const { getKnowledgeSource: get, listKnowledgeSources: list } = await import("@/lib/db");
+  if (args.sourceId) {
+    const existing = await get(args.sourceId, args.workspaceId);
+    if (existing && (existing.status === "pending" || existing.status === "failed")) {
+      return { id: existing.id, status: existing.status, chunksTotal: chunksTotalFor(existing.canonical_content), resumed: true };
     }
+    return null;
   }
-  await replaceKnowledgeChunks({
-    knowledgeId,
-    workspaceId,
-    chunks: chunks.map((content, i) => ({ content, position: i, blobId: blobs[i] ?? null })),
-  });
-  return { ok: true, blobs };
+  const rows = await list(args.workspaceId);
+  const dup = rows.find(
+    (r) =>
+      r.type === args.type &&
+      r.title === args.title &&
+      r.canonical_content === args.canonical &&
+      (r.status === "pending" || r.status === "failed"),
+  );
+  if (!dup) return null;
+  return { id: dup.id, status: dup.status, chunksTotal: chunksTotalFor(dup.canonical_content), resumed: true };
 }
 
 /**
@@ -112,7 +111,7 @@ async function indexSource(
  * with manual knowledge). No invented facts: only imported/manual text.
  */
 export async function POST(req: Request, ctx: { params: Promise<{ slug: string }> }) {
-  let body: { type?: unknown; title?: unknown; content?: unknown; url?: unknown };
+  let body: { type?: unknown; title?: unknown; content?: unknown; url?: unknown; sourceId?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -129,7 +128,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ slug: string }
     if (!(KNOWLEDGE_TYPES as readonly string[]).includes(type)) {
       return NextResponse.json({ ok: false, error: "unknown knowledge type" }, { status: 400 });
     }
-    const namespace = deriveKnowledgeNamespaceV2(ws.id);
+    const resumeId = typeof body.sourceId === "string" ? body.sourceId : null;
 
     let title = str(body.title, 160);
     let canonical: string;
@@ -179,6 +178,34 @@ export async function POST(req: Request, ctx: { params: Promise<{ slug: string }
       title = title ?? pages.pages[0].url;
     }
 
+    // Reconcile before creating: resume an in-flight source or reuse an
+    // identical pending/failed one, so retries and double-clicks never
+    // duplicate. Only then persist (fast — indexing runs separately).
+    const reconciled = await reconcileSource({
+      workspaceId: ws.id,
+      sourceId: resumeId,
+      type,
+      title: title!,
+      canonical,
+    });
+    if (reconciled) {
+      const existing = await getKnowledgeSource(reconciled.id, ws.id);
+      return NextResponse.json(
+        {
+          ok: true,
+          resumed: true,
+          source: {
+            id: reconciled.id,
+            type: existing?.type ?? type,
+            title: existing?.title ?? title,
+            sourceUrl: existing?.source_url ?? sourceUrl,
+            status: reconciled.status,
+            chunksTotal: reconciled.chunksTotal,
+          },
+        },
+        { status: 200 },
+      );
+    }
     const row = await createKnowledgeSource({
       workspaceId: ws.id,
       type: type as KnowledgeType,
@@ -186,28 +213,13 @@ export async function POST(req: Request, ctx: { params: Promise<{ slug: string }
       sourceUrl,
       canonicalContent: canonical,
     });
-    try {
-      const indexed = await indexSource(namespace, row.id, ws.id, canonical);
-      await updateKnowledgeSource(row.id, ws.id, { status: indexed.ok ? "ready" : "failed" });
-      if (!indexed.ok) {
-        return NextResponse.json(
-          { ok: false, error: indexed.error ?? "indexing failed", sourceId: row.id },
-          { status: 502 },
-        );
-      }
-    } catch (e) {
-      if (e instanceof WalrusNotConfiguredError) {
-        await updateKnowledgeSource(row.id, ws.id, { status: "failed" });
-        return NextResponse.json({ ok: false, error: e.message, sourceId: row.id }, { status: 503 });
-      }
-      await updateKnowledgeSource(row.id, ws.id, { status: "failed" });
-      return NextResponse.json(
-        { ok: false, error: e instanceof Error ? e.message : "indexing failed", sourceId: row.id },
-        { status: 502 },
-      );
-    }
+    // Durably persisted as pending — indexing proceeds separately via
+    // POST ../[id]/index (bounded batches), so this response stays fast.
     return NextResponse.json(
-      { ok: true, source: { id: row.id, type, title, sourceUrl, status: "ready" } },
+      {
+        ok: true,
+        source: { id: row.id, type, title, sourceUrl, status: "pending", chunksTotal: chunksTotalFor(canonical) },
+      },
       { status: 201 },
     );
   } catch (e) {
@@ -240,31 +252,22 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ slug: string 
       return NextResponse.json({ ok: false, error: "nothing valid to update" }, { status: 400 });
     }
     const canonical = content ? capCanonical(content).text : existing.canonical_content;
+    // Resume path: the client already holds this source (retry/double-click).
     await updateKnowledgeSource(existing.id, ws.id, {
       ...(title ? { title } : {}),
       ...(content ? { canonicalContent: canonical, status: "pending" as const } : {}),
     });
-    if (content) {
-      const namespace = deriveKnowledgeNamespaceV2(ws.id);
-      try {
-        const indexed = await indexSource(namespace, existing.id, ws.id, canonical);
-        await updateKnowledgeSource(existing.id, ws.id, { status: indexed.ok ? "ready" : "failed" });
-        if (!indexed.ok) {
-          return NextResponse.json(
-            { ok: false, error: indexed.error ?? "indexing failed", sourceId: existing.id },
-            { status: 502 },
-          );
-        }
-      } catch (e) {
-        await updateKnowledgeSource(existing.id, ws.id, { status: "failed" });
-        return NextResponse.json(
-          { ok: false, error: e instanceof Error ? e.message : "indexing failed", sourceId: existing.id },
-          { status: 502 },
-        );
-      }
-    }
+    // Edits persist fast as pending — the client drives POST ../[id]/index
+    // until ready/failed, so long rewrites can't wedge the request either.
     const row = await getKnowledgeSource(existing.id, ws.id);
-    return NextResponse.json({ ok: true, source: { id: row!.id, status: row!.status } });
+    return NextResponse.json({
+      ok: true,
+      source: {
+        id: row!.id,
+        status: row!.status,
+        chunksTotal: content ? chunksTotalFor(canonical) : undefined,
+      },
+    });
   } catch (e) {
     return err(e, "request failed");
   }

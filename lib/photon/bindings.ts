@@ -87,7 +87,52 @@ export async function issuePairingCode(input: {
 }
 
 /**
- * Resolve an inbound sender to its ACTIVE binding. When the inbound thread
+ * Look up a pending, unexpired code WITHOUT consuming it. Lets the
+ * caller resolve the target workspace (and check sender conflicts)
+ * before the single-use claim fires.
+ */
+export async function pendingCodeWorkspace(
+  code: string,
+): Promise<{ bindingId: string; workspaceId: string; operatorUserId: string } | null> {
+  const sql = await requireSql();
+  const clean = code.trim().toUpperCase();
+  if (!clean) return null;
+  const rows = (await sql`
+    select id, workspace_id, operator_user_id
+    from photon_operator_bindings
+    where pairing_code_hash = ${hashPairingCode(clean)}
+      and status = 'pending'
+      and pairing_expires_at is not null
+      and pairing_expires_at > now()
+    limit 1
+  `) as unknown as { id: string; workspace_id: string; operator_user_id: string }[];
+  const row = rows[0];
+  if (!row) return null;
+  return { bindingId: row.id, workspaceId: row.workspace_id, operatorUserId: row.operator_user_id };
+}
+
+/**
+ * Distinct workspace ids where this sender hash already holds an ACTIVE
+ * binding, excluding one workspace. Non-empty means claiming another code
+ * would silently split/switch that phone's context — the caller must stop
+ * and ask the operator instead.
+ */
+export async function activeSenderWorkspaces(
+  senderHash: string,
+  exceptWorkspaceId: string,
+): Promise<string[]> {
+  const sql = await requireSql();
+  const rows = (await sql`
+    select distinct workspace_id
+    from photon_operator_bindings
+    where sender_hash = ${senderHash}
+      and status = 'active'
+      and workspace_id != ${exceptWorkspaceId}
+  `) as unknown as { workspace_id: string }[];
+  return rows.map((r) => r.workspace_id);
+}
+
+/**
  * is supplied, it is recorded as the binding's durable conversation address
  * (used for server-initiated outbound after cold starts) alongside last_seen.
  */

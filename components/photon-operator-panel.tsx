@@ -57,7 +57,7 @@ export default async function PhotonOperatorPanel({ workspaceSlug }: { workspace
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm font-medium text-neutral-100">iMessage Operator</p>
-        <Pill on={paired} onLabel="CONNECTED" offLabel="NOT PAIRED" />
+        <Pill on={paired} onLabel="Connected" offLabel="Not connected" />
       </div>
       <dl className="mt-2 space-y-1 text-[11px] text-neutral-400">
         <div className="flex justify-between gap-2">

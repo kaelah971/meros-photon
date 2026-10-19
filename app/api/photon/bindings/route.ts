@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/auth";
 import { getWorkspaceBySlug } from "@/lib/db";
 import { issuePairingCode, listBindings, revokeBinding } from "@/lib/photon/bindings";
+import { sanitizePairingContact } from "@/lib/photon/pairing-link";
 import { requireStaff } from "@/lib/support-ops";
 
 // S1 developer pairing helpers (server-only, staff-session gated).
@@ -54,6 +55,9 @@ export async function POST(req: Request) {
         // Shown ONCE: only the hash is persisted; this plaintext is never stored.
         code: issued.code,
         expiresAt: issued.expiresAt,
+        // Verified Messages contact for the compose link, or null when none
+        // is configured (the UI then offers manual recipient selection).
+        contact: sanitizePairingContact(process.env.MEROS_IMESSAGE_CONTACT),
         hint: "The operator replies `pair <code>` from iMessage within 15 minutes.",
       },
       { status: 201 },

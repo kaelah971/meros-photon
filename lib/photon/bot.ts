@@ -150,6 +150,15 @@ export function realDeps(): OperatorDeps {
         ? { id: b.id, workspaceId: b.workspace_id, operatorUserId: b.operator_user_id, threadId: b.thread_id }
         : null;
     },
+    pendingCodeWorkspace: async (code) => {
+      const { pendingCodeWorkspace } = await import("./bindings");
+      const t = await pendingCodeWorkspace(code);
+      return t ? { workspaceId: t.workspaceId } : null;
+    },
+    senderOtherWorkspaces: async (senderHash, workspaceId) => {
+      const { activeSenderWorkspaces } = await import("./bindings");
+      return activeSenderWorkspaces(senderHash, workspaceId);
+    },
     checkStaff: async (userId, workspaceId) => {
       const { requireStaff } = await import("../support-ops");
       await requireStaff(userId, workspaceId);

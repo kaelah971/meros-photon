@@ -31,6 +31,10 @@ export type OperatorWorkspace = {
 export type OperatorDeps = {
   findBinding: (senderHash: string) => Promise<OperatorBinding | null>;
   claimPairing: (code: string, senderHash: string) => Promise<OperatorBinding | null>;
+  /** Resolve a pending code's workspace without consuming it (conflict check). */
+  pendingCodeWorkspace?: (code: string) => Promise<{ workspaceId: string } | null>;
+  /** Other workspaces where this sender is already actively paired. */
+  senderOtherWorkspaces?: (senderHash: string, workspaceId: string) => Promise<string[]>;
   /**
    * Record the inbound thread as the binding's durable conversation address
    * (S2 proactive sends). Best-effort: failures never block the reply.
@@ -95,6 +99,7 @@ export type OperatorResult =
   | { action: "paired"; replyText: string }
   | { action: "pairing-required"; replyText: string }
   | { action: "pair-failed"; replyText: string }
+  | { action: "pair-conflict"; replyText: string }
   | { action: "usage"; replyText: string }
   | { action: "converse"; replyText: string }
   | { action: "denied"; replyText: string }
@@ -223,6 +228,11 @@ export const USAGE_TEXT =
   `Meros commands: \`incidents\` \`alerts\` \`show me\` \`investigate <ref>\` ` +
   `\`evidence <ref>\` \`matches <ref>\` \`decisions\` \`stats\` — or \`help\`.`;
 
+export const PAIR_CONFLICT_TEXT =
+  `Meros: this iPhone is already connected to another team inbox, so I can't move it silently. ` +
+  `To use it here instead, open that team's console under iMessage Operator and revoke the pairing there, ` +
+  `then send your pairing message again here — your code still works and nothing was changed.`;
+
 export const PAIR_FAILED_TEXT =
   `Meros: that pairing code didn't match (it may have expired or was already used). ` +
   `Ask your workspace admin for a fresh code, then reply \`pair XXXX-XXXX-XXXX\`.`;
@@ -314,6 +324,21 @@ export async function handleOperatorMessage(
   // Pairing claims work WITHOUT an existing binding (that is the point).
   const pair = parsePairIntent(text);
   if (pair) {
+    // Multi-workspace safety: a phone already active elsewhere must never
+    // silently switch context. The check runs BEFORE the single-use claim,
+    // so a blocked attempt keeps its code valid for an explicit retry.
+    try {
+      const target = await deps.pendingCodeWorkspace?.(pair.code);
+      if (target) {
+        const others = (await deps.senderOtherWorkspaces?.(input.senderHash, target.workspaceId)) ?? [];
+        if (others.length > 0) {
+          await replyOnce(deps, ctx, PAIR_CONFLICT_TEXT, "rejected");
+          return { action: "pair-conflict", replyText: PAIR_CONFLICT_TEXT };
+        }
+      }
+    } catch {
+      return { action: "degraded", replyText: DEGRADED_TEXT };
+    }
     let claimed: OperatorBinding | null = null;
     try {
       claimed = await deps.claimPairing(pair.code, input.senderHash);

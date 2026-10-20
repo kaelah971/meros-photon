@@ -2,6 +2,8 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { currentUser } from "@/lib/auth";
 import { getOwnedWorkspace } from "@/lib/db";
+import { WorkspaceAccess } from "@/components/workspace-access";
+import { loginUrl } from "@/lib/return-to";
 import { ConsoleShell, PageBackdrop, type ConsoleNavItem } from "@/components/meros-ui";
 
 const NAV: ConsoleNavItem[] = [
@@ -16,8 +18,10 @@ const NAV: ConsoleNavItem[] = [
 
 /**
  * Staff console shell. Membership is verified on EVERY render: session
- * user → organization_members → workspace. Unknown vs. foreign slugs both
- * redirect to /app (no org enumeration).
+ * user → organization_members → workspace. Unknown vs. foreign slugs show
+ * the SAME access screen (no org enumeration, no private details). The
+ * middleware already preserved the exact destination for anonymous
+ * visitors; here an unauthenticated fallback keeps the workspace root.
  */
 export default async function WorkspaceLayout({
   params,
@@ -27,10 +31,16 @@ export default async function WorkspaceLayout({
   children: React.ReactNode;
 }) {
   const user = await currentUser();
-  if (!user) redirect("/login");
   const { slug } = await params;
+  if (!user) redirect(loginUrl(`/app/workspaces/${slug}`));
   const ws = await getOwnedWorkspace(user.id, slug);
-  if (!ws) redirect("/app");
+  if (!ws) {
+    return (
+      <div className="relative min-h-screen bg-[#030806] text-[#F5F7F5]">
+        <WorkspaceAccess email={user.email} slug={slug} />
+      </div>
+    );
+  }
 
   return (
     <div className="relative min-h-screen bg-[#030806] text-[#F5F7F5]">

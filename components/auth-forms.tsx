@@ -2,13 +2,18 @@
 
 import { authClient } from "@/lib/better-auth-client";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 import { Eyebrow, Field, PageBackdrop, Wordmark, inputClass } from "@/components/meros-ui";
+import { sanitizeReturnTo } from "@/lib/return-to";
 import { validateDisplayName } from "@/lib/auth-crypto";
 
 function AuthForm({ mode }: { mode: "signup" | "login" }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  // Post-auth destination: only a validated internal staff path survives.
+  // Plain /login or /signup visits keep the long-standing /app landing.
+  const next = sanitizeReturnTo(searchParams.get("next"));
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
@@ -42,7 +47,7 @@ function AuthForm({ mode }: { mode: "signup" | "login" }) {
         setError(friendlyAuthError(result.error.message) ?? "Something went wrong.");
         return;
       }
-      router.push("/app");
+      router.push(next ?? "/app");
       router.refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Network error.");

@@ -34,14 +34,15 @@ describe("customer sign-out behavior", () => {
     expect(refreshCurrentRoute).not.toHaveBeenCalled();
   });
 
-  it("wires both visible Sign out controls to the same guarded handler", () => {
+  it("wires all visible sign-out controls (header, panel, entry choice) to the same guarded handler", () => {
     const src = readFileSync("components/support-chat.tsx", "utf8");
 
     expect(src.match(/const signOutHere = useCallback/g)?.length).toBe(1);
-    expect(src.match(/void signOutHere\(\)/g)?.length).toBe(2);
+    expect(src.match(/void signOutHere\(\)/g)?.length).toBe(3);
     expect(src).toContain("signOutInFlightRef.current");
-    expect(src.match(/disabled=\{signingOut\}/g)?.length).toBe(2);
+    expect(src.match(/disabled=\{signingOut\}/g)?.length).toBe(3);
     expect(src).toContain("Signing out…");
+    expect(src).toContain("Use a different account");
   });
 
   it("keeps normal support chat send behavior present", () => {

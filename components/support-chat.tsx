@@ -7,6 +7,7 @@ import { recordEvidence, shortBlob } from "@/lib/evidence";
 import { authClient } from "@/lib/better-auth-client";
 import { captureNoteForResult } from "@/lib/capture-status";
 import { CUSTOMER_SIGN_OUT_ERROR, signOutCustomerSession } from "@/lib/customer-signout";
+import { entryFlagKey, supportTitle } from "@/lib/customer-entry";
 import { PageBackdrop } from "@/components/meros-ui";
 import {
   MAX_ATTACHMENTS,
@@ -355,6 +356,11 @@ export function SupportChat({
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
   const [conversationId, setConversationId] = useState<string | null>(null);
+  // Initial-entry account choice: shown once per browser per identity so a
+  // shared/incognito session never silently opens someone else's chat.
+  // Defaults to dismissed (no refresh interruption); an effect opens it
+  // only when this browser hasn't accepted this identity yet.
+  const [choiceOpen, setChoiceOpen] = useState(false);
   // Failed-turn keys: preserved so "Retry answer" reuses the ORIGINAL
   // conversation + idempotency keys instead of duplicating the question.
   const [failedTurn, setFailedTurn] = useState<{
@@ -880,6 +886,28 @@ export function SupportChat({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [started]);
 
+  useEffect(() => {
+    if (!isAuth || !sessionEmail) return;
+    try {
+      if (!window.sessionStorage.getItem(entryFlagKey(workspaceSlug, sessionEmail))) {
+        setChoiceOpen(true);
+      }
+    } catch {
+      // Storage unavailable — stay in chat rather than blocking entry.
+    }
+    // Run once on mount: never re-prompt on rerenders or refreshes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const acceptChoice = useCallback(() => {
+    try {
+      if (sessionEmail) window.sessionStorage.setItem(entryFlagKey(workspaceSlug, sessionEmail), "1");
+    } catch {
+      // Non-persistent — the choice simply reappears next visit.
+    }
+    setChoiceOpen(false);
+  }, [sessionEmail, workspaceSlug]);
+
   const loadHistoryList = useCallback(async () => {
     try {
       const res = await fetch(
@@ -995,7 +1023,7 @@ export function SupportChat({
         <div className="mt-6 space-y-2">
           {lockWorkspace ? (
             <p className="rounded-md border border-[rgba(119,255,117,0.14)] bg-[rgba(10,27,18,0.72)] px-3 py-2.5 text-sm text-neutral-200">
-              {workspaceName ? `${workspaceName} Support` : workspaceSlug}
+              {workspaceName ? `${supportTitle(workspaceName)}` : workspaceSlug}
             </p>
           ) : (
             <label className="block text-xs text-neutral-400">
@@ -1090,9 +1118,10 @@ export function SupportChat({
           <button
             onClick={() => void signOutHere()}
             disabled={signingOut}
+            title="Sign out and return to this workspace's sign-in screen"
             className="mt-2 w-full rounded-md border border-[rgba(119,255,117,0.25)] px-3 py-1.5 text-xs text-neutral-300 hover:border-[rgba(119,255,117,0.5)] disabled:opacity-40"
           >
-            {signingOut ? "Signing out…" : "Sign out"}
+            {signingOut ? "Signing out…" : "Switch account"}
           </button>
         )}
       </div>
@@ -1103,7 +1132,7 @@ export function SupportChat({
     <main className="relative mx-auto flex min-h-screen w-full max-w-6xl flex-col px-4 py-6 md:flex-row md:gap-6">
       <PageBackdrop />
       <aside className="mb-4 hidden w-72 shrink-0 md:mb-0 md:block" aria-label="Conversation sessions">
-        <p className="truncate text-sm text-neutral-300">{workspaceName ? `${workspaceName} Support` : "Support"}</p>
+        <p className="truncate text-sm text-neutral-300">{workspaceName ? `${supportTitle(workspaceName)}` : "Support"}</p>
         <div className="mt-3">{historyPanel}</div>
       </aside>
       {showHistory && (
@@ -1111,7 +1140,7 @@ export function SupportChat({
           <div className="absolute inset-0 bg-black/70" onClick={() => setShowHistory(false)} />
           <div className="absolute inset-y-0 left-0 w-80 max-w-[85vw] overflow-y-auto border-r border-[rgba(119,255,117,0.2)] bg-[#06100B] p-4">
             <div className="mb-3 flex items-center justify-between">
-              <p className="truncate text-sm text-neutral-300">{workspaceName ? `${workspaceName} Support` : "Support"}</p>
+              <p className="truncate text-sm text-neutral-300">{workspaceName ? `${supportTitle(workspaceName)}` : "Support"}</p>
               <button
                 onClick={() => setShowHistory(false)}
                 aria-label="Close conversation list"
@@ -1128,7 +1157,7 @@ export function SupportChat({
       <header className="relative flex flex-wrap items-center justify-between gap-3 border-b border-[rgba(119,255,117,0.14)] pb-3">
         <div className="min-w-0">
           <p className="font-display text-sm font-bold tracking-[0.18em] text-[#9AFF8D]">MEROS</p>
-          <p className="mt-0.5 truncate text-sm text-neutral-300">{workspaceName ? `${workspaceName} Support` : "Support chat with memory"}</p>
+          <p className="mt-0.5 truncate text-sm text-neutral-300">{workspaceName ? `${supportTitle(workspaceName)}` : "Support chat with memory"}</p>
           <p className="truncate text-[11px] text-neutral-500">
             {isAuth && sessionEmail ? `Signed in as ${sessionEmail}` : "Customer session"} · {workspaceSlug}
           </p>
@@ -1159,7 +1188,7 @@ export function SupportChat({
               title="Sign out and return to this workspace's sign-in screen"
               className="rounded-md border border-neutral-700 px-3 py-1.5 text-xs text-neutral-400 hover:border-neutral-500 hover:text-neutral-200 disabled:opacity-40"
             >
-              {signingOut ? "Signing out…" : "Sign out"}
+              {signingOut ? "Signing out…" : "Switch account"}
             </button>
           )}
           {!lockWorkspace && (
@@ -1193,6 +1222,31 @@ export function SupportChat({
         <p role="alert" className="mt-3 rounded-md border border-red-900 bg-red-950/40 px-3 py-2 text-xs text-red-200">
           {signOutError}
         </p>
+      )}
+
+      {choiceOpen && isAuth && sessionEmail && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4" role="dialog" aria-modal="true" aria-label="Choose account">
+          <div className="w-full max-w-sm rounded-md border border-[rgba(119,255,117,0.25)] bg-[#06100B] p-5">
+            <p className="font-display text-[11px] tracking-[0.25em] text-[#4CA862]">MEROS · CUSTOMER SUPPORT</p>
+            <h2 className="mt-2 text-lg font-semibold text-neutral-100">Who needs help today?</h2>
+            <p className="mt-1 text-xs leading-5 text-neutral-400">
+              This browser is signed in — make sure it&apos;s really you before opening private conversations.
+            </p>
+            <button
+              onClick={acceptChoice}
+              className="mt-4 w-full rounded-md bg-[#77FF75] px-4 py-2.5 text-sm font-medium text-neutral-950 hover:bg-emerald-400"
+            >
+              Continue as {sessionEmail}
+            </button>
+            <button
+              onClick={() => void signOutHere()}
+              disabled={signingOut}
+              className="mt-2 w-full rounded-md border border-[rgba(119,255,117,0.25)] px-4 py-2.5 text-sm text-neutral-300 hover:border-[rgba(119,255,117,0.5)] disabled:opacity-40"
+            >
+              {signingOut ? "Signing out…" : "Use a different account"}
+            </button>
+          </div>
+        </div>
       )}
 
       <div className="flex-1 space-y-4 py-6">

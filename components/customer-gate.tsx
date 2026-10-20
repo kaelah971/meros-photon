@@ -2,6 +2,7 @@
 
 import { authClient } from "@/lib/better-auth-client";
 import { PageBackdrop } from "@/components/meros-ui";
+import { supportTitle } from "@/lib/customer-entry";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
@@ -52,12 +53,17 @@ export function CustomerGate({
     <main className="relative mx-auto max-w-md px-6 py-16">
       <PageBackdrop />
       <p className="font-display relative text-[11px] tracking-[0.3em] text-[#4CA862]">
-        MEROS · {workspaceName.toUpperCase()} SUPPORT
+        MEROS · CUSTOMER SUPPORT
       </p>
-      <h1 className="mt-3 text-2xl font-semibold">Get help, pick up where you left off</h1>
+      <h1 className="mt-3 text-2xl font-semibold">{supportTitle(workspaceName)}</h1>
       <p className="mt-2 text-sm leading-6 text-neutral-300">
         Sign in so Meros remembers your private context across sessions.
       </p>
+      <ul className="mt-3 space-y-1 text-xs text-neutral-400">
+        <li>· Your questions and answers stay private to your account.</li>
+        <li>· Pick up your conversation on any device.</li>
+        <li>· No organization or workspace setup — just sign in and chat.</li>
+      </ul>
       <div className="mt-5 flex gap-1 rounded-md border border-[rgba(119,255,117,0.14)] bg-[rgba(10,27,18,0.72)] p-1 text-xs">
         {(["signin", "signup"] as const).map((t) => (
           <button

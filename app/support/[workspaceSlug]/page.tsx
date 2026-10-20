@@ -1,3 +1,4 @@
+import React from "react";
 import { notFound } from "next/navigation";
 import { SupportChat } from "@/components/support-chat";
 import { CustomerGate } from "@/components/customer-gate";

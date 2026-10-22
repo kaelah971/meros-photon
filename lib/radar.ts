@@ -169,10 +169,21 @@ export type RadarDeps = {
 };
 
 export type RadarResult =
-  | { action: "alerted"; sent: number; deduped: number; suppressed: number }
+  | { action: "alerted"; sent: number; deduped: number; suppressed: number; suppressedReasons?: string[] }
   | { action: "ineligible"; reason: string }
   | { action: "no_recipients" }
   | { action: "deferred"; reason: string };
+
+/**
+ * Detection-to-Radar timing gate (single source of truth).
+ * Radar is evaluated ONLY when a genuinely new conversation joins an
+ * existing candidate. Creation never qualifies (one message cannot meet
+ * the 3-customer threshold); same-conversation follow-ups never qualify
+ * (threshold requires distinct conversations).
+ */
+export function shouldEvaluateRadar(outcome: { action: string; newConversation?: boolean }): boolean {
+  return outcome.action === "joined" && outcome.newConversation === true;
+}
 
 /**
  * Evaluate one candidate and alert every eligible opted-in operator.
@@ -224,11 +235,17 @@ export async function maybeSendRadarAlert(
   let sent = 0;
   let deduped = 0;
   let suppressed = 0;
+  const suppressedReasons: string[] = [];
+  const pushReason = (reason: unknown) => {
+    const clean = String(reason ?? "suppressed").replace(/\s+/g, " ").trim().slice(0, 120);
+    if (clean) suppressedReasons.push(clean);
+  };
   for (const operatorUserId of optedIn) {
     try {
       const recipient = await deps.resolveRecipient(workspaceId, operatorUserId);
       if (!recipient) {
         suppressed++;
+        pushReason("no_eligible_recipient");
         continue;
       }
       const r = await deps.notify({
@@ -241,12 +258,16 @@ export async function maybeSendRadarAlert(
       });
       if (r.sent) sent++;
       else if (r.deduped) deduped++;
-      else suppressed++;
-    } catch {
+      else {
+        suppressed++;
+        pushReason(r.reason);
+      }
+    } catch (e) {
       suppressed++;
+      pushReason(e instanceof Error ? e.message : "suppressed");
     }
   }
-  return { action: "alerted", sent, deduped, suppressed };
+  return { action: "alerted", sent, deduped, suppressed, suppressedReasons };
 }
 
 /** Production wiring: issue candidates + Photon bindings/prefs/notify. */
@@ -255,7 +276,7 @@ export async function realRadarDeps(): Promise<RadarDeps> {
   const { listRadarOptedIn } = await import("./photon/preferences");
   return {
     loadCandidate: async (candidateId, workspaceId) => {
-      const c = await getCandidateForWorkspace(candidateId, workspaceId).catch(() => null);
+      const c = await getCandidateForWorkspace(workspaceId, candidateId).catch(() => null);
       return c ? { id: c.id, status: c.status, title: c.title, summary: c.summary, updated_at: c.updated_at } : null;
     },
     listMembers: async (candidateId, workspaceId) => {

@@ -48,7 +48,7 @@ export function realInvestigateReads(): InvestigateReads {
     },
     getCandidate: async (id, workspaceId) => {
       const { getCandidateForWorkspace, listCandidateMembers, listCandidateMessages } = await import("../issue-candidates");
-      const c = await getCandidateForWorkspace(id, workspaceId).catch(() => null);
+      const c = await getCandidateForWorkspace(workspaceId, id).catch(() => null);
       if (!c) return null;
       const [members, messages] = await Promise.all([
         listCandidateMembers(id, workspaceId).catch(() => []),

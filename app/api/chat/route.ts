@@ -367,6 +367,7 @@ export async function POST(req: Request) {
       messageId: userMessageId,
       text: message.slice(0, 2000),
     };
+    const decisionWorkspaceSlug = tenant.workspace.slug;
     try {
       after(() =>
         (async () => {
@@ -374,8 +375,13 @@ export async function POST(req: Request) {
             const { detectFromChat, recentConversationExcerpts } = await import("@/lib/detection");
             const { geminiJudge } = await import("@/lib/detection-gemini");
             const { isGeminiConfigured } = await import("@/lib/env");
+            const { logRadarDecision, mapRadarResultToOutcome } = await import("@/lib/radar-decision");
+            const emit = (
+              fields: Omit<Parameters<typeof logRadarDecision>[0], "workspaceSlug">,
+            ) => logRadarDecision({ ...fields, workspaceSlug: decisionWorkspaceSlug });
             if (!isGeminiConfigured()) {
               console.log("[chat] detection skipped (Gemini unconfigured — degrading without guessing)");
+              emit({ outcome: "detection_skipped", candidateIdPrefix: "none", reason: "gemini_unconfigured" });
             } else {
               try {
                 const outcome = await detectFromChat(detectCtx, {
@@ -384,25 +390,59 @@ export async function POST(req: Request) {
                   store: await import("@/lib/issue-candidates"),
                 });
                 console.log(`[chat] detection ${outcome.action}` + ("candidateId" in outcome ? ` candidate=${outcome.candidateId}` : ""));
+                const candPrefix =
+                  "candidateId" in outcome && typeof outcome.candidateId === "string"
+                    ? outcome.candidateId.slice(0, 8)
+                    : "none";
+                if (outcome.action === "created") {
+                  emit({ outcome: "detection_created", candidateIdPrefix: candPrefix });
+                } else if (outcome.action === "joined") {
+                  emit({
+                    outcome: "detection_joined",
+                    candidateIdPrefix: candPrefix,
+                    newConversation: outcome.newConversation,
+                  });
+                } else {
+                  emit({ outcome: "detection_skipped", candidateIdPrefix: candPrefix, reason: outcome.action });
+                }
                 // S15B Incident Radar: genuine new candidate membership →
                 // evaluate the 3-customer/60-minute rule and alert ONLY
                 // explicitly opted-in operators. Fully isolated: never
                 // delays, breaks, or reclassifies anything in this chain.
-                if (outcome.action === "joined" && outcome.newConversation) {
+                const { shouldEvaluateRadar } = await import("@/lib/radar");
+                if (shouldEvaluateRadar(outcome)) {
                   try {
                     const { maybeSendRadarAlert, realRadarDeps } = await import("@/lib/radar");
                     const radar = await maybeSendRadarAlert(
                       detectCtx.workspaceId,
-                      outcome.candidateId,
+                      (outcome as { candidateId: string }).candidateId,
                       await realRadarDeps(),
                     );
-                    console.log(`[chat] radar ${outcome.candidateId.slice(0, 8)} ${radar.action}`);
+                    console.log(`[chat] radar ${(outcome as { candidateId: string }).candidateId.slice(0, 8)} ${radar.action}`);
+                    if (radar.action === "alerted") {
+                      emit({
+                        outcome: mapRadarResultToOutcome(radar),
+                        candidateIdPrefix: candPrefix,
+                        sent: radar.sent,
+                        deduped: radar.deduped,
+                        suppressed: radar.suppressed,
+                        reason: radar.suppressedReasons?.[0],
+                      });
+                    } else if (radar.action === "ineligible") {
+                      emit({ outcome: mapRadarResultToOutcome(radar), candidateIdPrefix: candPrefix, reason: radar.reason });
+                    } else if (radar.action === "no_recipients") {
+                      emit({ outcome: mapRadarResultToOutcome(radar), candidateIdPrefix: candPrefix });
+                    } else {
+                      emit({ outcome: mapRadarResultToOutcome(radar), candidateIdPrefix: candPrefix, reason: radar.reason });
+                    }
                   } catch (e) {
                     console.log(`[chat] radar skipped safely: ${e instanceof Error ? e.message : e}`);
+                    emit({ outcome: "notification_failed", candidateIdPrefix: candPrefix, reason: "radar_wiring_failed" });
                   }
                 }
               } catch (e) {
                 console.log(`[chat] detection failed safely: ${e instanceof Error ? e.message : e}`);
+                emit({ outcome: "detection_skipped", candidateIdPrefix: "none", reason: "detection_failed" });
               }
             }
             // S6: new report on a linked conversation refreshes that
@@ -502,7 +542,17 @@ export async function POST(req: Request) {
         })(),
       );
     } catch {
-      // after() outside request scope (tests, dev snippets): skip silently.
+      // after() outside request scope (tests, dev snippets): one privacy-safe
+      // decision record so the skip itself stays observable. Slug is already
+      // normalized server-side; no ids, contents, or addresses are logged.
+      try {
+        const safeSlug = decisionWorkspaceSlug.replace(/[^a-zA-Z0-9-_]/g, "").slice(0, 80) || "unknown";
+        console.log(
+          `[radar-decision] ${JSON.stringify({ src: "radar-decision", outcome: "detection_skipped", workspace: safeSlug, candidate: "none", reason: "no_request_scope" })}`,
+        );
+      } catch {
+        // Logging must never break the request path.
+      }
     }
   }
 

@@ -163,6 +163,56 @@ export async function messageAlreadyClustered(
   return rows[0] ? { candidateId: rows[0].candidate_id } : null;
 }
 
+export type UnclusteredMessage = {
+  messageId: string;
+  conversationId: string;
+  customerId: string;
+  text: string;
+  createdAt: string;
+};
+
+/**
+ * Recent persisted customer reports with no incident attribution yet —
+ * the recovery set for deferred detection. Oldest first (fairness),
+ * strictly bounded, workspace-scoped. Never invents: only persisted
+ * messages with verified conversation/customer links are returned.
+ */
+export async function listUnclusteredRecentMessages(
+  workspaceId: string,
+  input: { sinceIso: string; excludeMessageIds?: readonly string[]; limit?: number },
+): Promise<UnclusteredMessage[]> {
+  const sql = await requireSql();
+  const limit = Math.min(Math.max(input.limit ?? 3, 1), 10);
+  const exclude = [...new Set((input.excludeMessageIds ?? []).filter((id) => typeof id === "string" && id.length > 0))].slice(0, 20);
+  const rows = (await (exclude.length > 0
+    ? sql`
+      select m.id as message_id, m.conversation_id, c.customer_id, m.content as text, m.created_at
+      from messages m
+      join conversations c on c.id = m.conversation_id
+      where c.workspace_id = ${workspaceId} and m.role = 'user' and m.created_at >= ${input.sinceIso}
+        and not (m.id = any(${exclude}))
+        and not exists (select 1 from issue_candidate_messages g where g.message_id = m.id)
+      order by m.created_at asc limit ${limit}
+    `
+    : sql`
+      select m.id as message_id, m.conversation_id, c.customer_id, m.content as text, m.created_at
+      from messages m
+      join conversations c on c.id = m.conversation_id
+      where c.workspace_id = ${workspaceId} and m.role = 'user' and m.created_at >= ${input.sinceIso}
+        and not exists (select 1 from issue_candidate_messages g where g.message_id = m.id)
+      order by m.created_at asc limit ${limit}
+    `)) as unknown as { message_id: string; conversation_id: string; customer_id: string; text: unknown; created_at: unknown }[];
+  return rows
+    .filter((r) => typeof r.text === "string" && r.text.trim().length > 0)
+    .map((r) => ({
+      messageId: r.message_id,
+      conversationId: r.conversation_id,
+      customerId: r.customer_id,
+      text: r.text as string,
+      createdAt: new Date(r.created_at as string).toISOString(),
+    }));
+}
+
 /** Pending candidates this conversation already belongs to (stickiness). */
 export async function pendingCandidatesForConversation(
   workspaceId: string,
@@ -248,6 +298,13 @@ export async function addMessageToCandidate(input: {
   messageId: string;
   conversationId: string;
   customerId: string;
+  /**
+   * Attribution time override for deferred-report recovery. The ORIGINAL
+   * report timestamp keeps Radar eligibility windows honest; absent, the
+   * database records attribution time (live path). Must be a valid ISO
+   * timestamp when provided — invalid values fall back to now().
+   */
+  addedAt?: string;
 }): Promise<{ memberAdded: boolean; messageAdded: boolean; duplicateOf: string | null }> {
   const sql = await requireSql();
   const cand = (await sql`
@@ -268,15 +325,20 @@ export async function addMessageToCandidate(input: {
   if (msg[0].conversation_id !== input.conversationId || msg[0].customer_id !== input.customerId) {
     throw Object.assign(new Error("message does not belong to that conversation/customer"), { status: 400 });
   }
+  // Honest attribution time: recovery replays use the original report
+  // timestamp; anything unparseable falls back to now() rather than
+  // failing the attribution.
+  const parsedAt = input.addedAt ? Date.parse(input.addedAt) : NaN;
+  const at = Number.isFinite(parsedAt) ? new Date(parsedAt).toISOString() : new Date().toISOString();
   const mem = (await sql`
-    insert into issue_candidate_members (candidate_id, conversation_id, customer_id)
-    values (${input.candidateId}, ${input.conversationId}, ${input.customerId})
+    insert into issue_candidate_members (candidate_id, conversation_id, customer_id, added_at)
+    values (${input.candidateId}, ${input.conversationId}, ${input.customerId}, ${at})
     on conflict (candidate_id, conversation_id) do nothing
     returning conversation_id
   `) as unknown as { conversation_id: string }[];
   const g = (await sql`
-    insert into issue_candidate_messages (candidate_id, message_id, conversation_id, customer_id)
-    values (${input.candidateId}, ${input.messageId}, ${input.conversationId}, ${input.customerId})
+    insert into issue_candidate_messages (candidate_id, message_id, conversation_id, customer_id, added_at)
+    values (${input.candidateId}, ${input.messageId}, ${input.conversationId}, ${input.customerId}, ${at})
     on conflict (message_id) do nothing
     returning message_id
   `) as unknown as { message_id: string }[];

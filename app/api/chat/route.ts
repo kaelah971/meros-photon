@@ -93,7 +93,7 @@ function scheduleDetectionFromChat(args: ChatDetectionSchedule): void {
             const { detectFromChat, recentConversationExcerpts } = await import("@/lib/detection");
             const { geminiJudge } = await import("@/lib/detection-gemini");
             const { isGeminiConfigured } = await import("@/lib/env");
-            const { logRadarDecision, mapRadarResultToOutcome } = await import("@/lib/radar-decision");
+            const { logRadarDecision } = await import("@/lib/radar-decision");
             const emit = (
               fields: Omit<Parameters<typeof logRadarDecision>[0], "workspaceSlug">,
             ) => logRadarDecision({ ...fields, workspaceSlug: decisionWorkspaceSlug });
@@ -125,39 +125,16 @@ function scheduleDetectionFromChat(args: ChatDetectionSchedule): void {
                 }
                 // S15B Incident Radar: genuine new candidate membership →
                 // evaluate the 3-customer/60-minute rule and alert ONLY
-                // explicitly opted-in operators. Fully isolated: never
+                // explicitly opted-in operators. Shared with the deferred-
+                // recovery sweep (lib/radar-evaluate) so recovered reports
+                // alert exactly like live ones. Fully isolated: never
                 // delays, breaks, or reclassifies anything in this chain.
-                const { shouldEvaluateRadar } = await import("@/lib/radar");
-                if (shouldEvaluateRadar(outcome)) {
-                  try {
-                    const { maybeSendRadarAlert, realRadarDeps } = await import("@/lib/radar");
-                    const radar = await maybeSendRadarAlert(
-                      detectCtx.workspaceId,
-                      (outcome as { candidateId: string }).candidateId,
-                      await realRadarDeps(),
-                    );
-                    console.log(`[chat] radar ${(outcome as { candidateId: string }).candidateId.slice(0, 8)} ${radar.action}`);
-                    if (radar.action === "alerted") {
-                      emit({
-                        outcome: mapRadarResultToOutcome(radar),
-                        candidateIdPrefix: candPrefix,
-                        sent: radar.sent,
-                        deduped: radar.deduped,
-                        suppressed: radar.suppressed,
-                        reason: radar.suppressedReasons?.[0],
-                      });
-                    } else if (radar.action === "ineligible") {
-                      emit({ outcome: mapRadarResultToOutcome(radar), candidateIdPrefix: candPrefix, reason: radar.reason });
-                    } else if (radar.action === "no_recipients") {
-                      emit({ outcome: mapRadarResultToOutcome(radar), candidateIdPrefix: candPrefix });
-                    } else {
-                      emit({ outcome: mapRadarResultToOutcome(radar), candidateIdPrefix: candPrefix, reason: radar.reason });
-                    }
-                  } catch (e) {
-                    console.log(`[chat] radar skipped safely: ${e instanceof Error ? e.message : e}`);
-                    emit({ outcome: "notification_failed", candidateIdPrefix: candPrefix, reason: "radar_wiring_failed" });
-                  }
-                }
+                const { evaluateRadarForOutcome } = await import("@/lib/radar-evaluate");
+                await evaluateRadarForOutcome({
+                  workspaceId: detectCtx.workspaceId,
+                  workspaceSlug: decisionWorkspaceSlug,
+                  outcome,
+                });
               } catch (e) {
                 console.log(`[chat] detection failed safely: ${e instanceof Error ? e.message : e}`);
                 emit({ outcome: "detection_skipped", candidateIdPrefix: "none", reason: "detection_failed" });
@@ -272,6 +249,79 @@ function scheduleDetectionFromChat(args: ChatDetectionSchedule): void {
         // Logging must never break the request path.
       }
     }
+}
+
+/**
+ * Deferred-detection recovery scheduler — request-scoped, non-blocking.
+ *
+ * Piggybacks one bounded sweep on live chat traffic (no cron in this
+ * deployment): recent persisted customer reports with no incident
+ * attribution are re-run through the normal detectFromChat path with
+ * their ORIGINAL timestamps, so Radar window math stays honest.
+ * Idempotent by construction (messageAlreadyClustered + exclusive
+ * attribution); stops at the first judge/store failure so an ongoing
+ * outage can never turn into a retry storm.
+ */
+function scheduleDeferredRecovery(args: {
+  workspaceId: string;
+  workspaceSlug: string;
+  excludeMessageIds: string[];
+}): void {
+  if (!args.workspaceId) return;
+  try {
+    after(() =>
+      (async () => {
+        try {
+          const { recoverDeferredReports } = await import("@/lib/detection-recovery");
+          const { geminiJudge } = await import("@/lib/detection-gemini");
+          const { recentConversationExcerpts } = await import("@/lib/detection");
+          const { isGeminiConfigured } = await import("@/lib/env");
+          if (!isGeminiConfigured()) return;
+          const store = await import("@/lib/issue-candidates");
+          const res = await recoverDeferredReports(
+            args.workspaceId,
+            {
+              store: {
+                messageAlreadyClustered: store.messageAlreadyClustered,
+                pendingCandidatesForConversation: store.pendingCandidatesForConversation,
+                pendingCandidateContexts: store.pendingCandidateContexts,
+                dismissedCandidateTitles: store.dismissedCandidateTitles,
+                createCandidate: store.createCandidate,
+                addMessageToCandidate: store.addMessageToCandidate,
+                deleteCandidate: store.deleteCandidate,
+                listUnclusteredRecent: (ws, input) =>
+                  store.listUnclusteredRecentMessages(ws, input),
+              },
+              judge: geminiJudge(),
+              listRecentExcerpts: recentConversationExcerpts,
+            },
+            { excludeMessageIds: args.excludeMessageIds },
+          );
+          // Recovered reports that complete a qualifying candidate go
+          // through the SAME Radar evaluation as live reports.
+          if (res.joinedNew.length > 0) {
+            const { evaluateRadarForOutcome } = await import("@/lib/radar-evaluate");
+            for (const candidateId of res.joinedNew) {
+              await evaluateRadarForOutcome({
+                workspaceId: args.workspaceId,
+                workspaceSlug: args.workspaceSlug,
+                outcome: { action: "joined", candidateId, newConversation: true },
+              });
+            }
+          }
+          if (res.attempted > 0 || res.deferred > 0) {
+            console.log(
+              `[chat] deferred recovery ${args.workspaceSlug} attempted=${res.attempted} attached=${res.attached} deferred=${res.deferred}${res.stoppedEarly ? " (paused — provider still down)" : ""}`,
+            );
+          }
+        } catch (e) {
+          console.log(`[chat] deferred recovery skipped safely: ${e instanceof Error ? e.message : e}`);
+        }
+      })(),
+    );
+  } catch {
+    // after() outside request scope: skip silently (tests, dev snippets).
+  }
 }
 export async function POST(req: Request) {
   // Product identity is the Better Auth session. Client supplies only the
@@ -521,6 +571,12 @@ export async function POST(req: Request) {
       text: message.slice(0, 2000),
       resolved: detectResolution(message),
     });
+    // Same turn: sweep other recent unclustered reports (bounded, lazy).
+    scheduleDeferredRecovery({
+      workspaceId: tenant.workspaceId,
+      workspaceSlug: tenant.workspace.slug,
+      excludeMessageIds: userMessageId ? [userMessageId] : [],
+    });
     return NextResponse.json(
       {
         ok: false,
@@ -602,6 +658,8 @@ export async function POST(req: Request) {
   // S5 automatic issue detection (see scheduleDetectionFromChat): one call
   // covers the persisted turn whether the answer below succeeds or fails —
   // the Gemini-failure return above schedules the same helper first.
+  // Deferred recovery for OTHER recent unclustered reports rides the same
+  // request scope (lazy, bounded, original timestamps preserved).
   scheduleDetectionFromChat({
     workspaceId: tenant.workspaceId,
     workspaceSlug: tenant.workspace.slug,
@@ -610,6 +668,11 @@ export async function POST(req: Request) {
     messageId: userMessageId,
     text: message.slice(0, 2000),
     resolved,
+  });
+  scheduleDeferredRecovery({
+    workspaceId: tenant.workspaceId,
+    workspaceSlug: tenant.workspace.slug,
+    excludeMessageIds: userMessageId ? [userMessageId] : [],
   });
 
   return NextResponse.json({

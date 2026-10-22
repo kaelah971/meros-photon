@@ -93,6 +93,13 @@ export type DetectInput = {
   customerId: string;
   messageId: string;
   text: string;
+  /**
+   * Original report time. Recovery replays use the persisted message
+   * timestamp so Radar's 60-minute window math stays honest — replay
+   * time must never make an expired report look fresh. Absent (live
+   * chat path) the store records attribution time as usual.
+   */
+  createdAt?: string;
 };
 
 export type DetectStore = {
@@ -115,6 +122,12 @@ export type DetectStore = {
     messageId: string;
     conversationId: string;
     customerId: string;
+    /**
+     * Attribution time override. Recovery replays pass the ORIGINAL
+     * report timestamp so Radar eligibility windows stay honest.
+     * Absent, the store records attribution time (live path).
+     */
+    addedAt?: string;
   }) => Promise<{ memberAdded: boolean; messageAdded: boolean; duplicateOf: string | null } | null>;
   deleteCandidate: (candidateId: string, workspaceId: string) => Promise<void>;
 };
@@ -212,6 +225,7 @@ export async function detectFromChat(
       messageId: input.messageId,
       conversationId: input.conversationId,
       customerId: input.customerId,
+      ...(input.createdAt ? { addedAt: input.createdAt } : {}),
     }).catch(() => null);
     if (!added) return { action: "deferred" };
     if (added.duplicateOf && added.duplicateOf !== targetId) {
@@ -243,6 +257,7 @@ export async function detectFromChat(
     messageId: input.messageId,
     conversationId: input.conversationId,
     customerId: input.customerId,
+    ...(input.createdAt ? { addedAt: input.createdAt } : {}),
   }).catch(() => null);
   // Lost the exclusive-attribution race: drop the orphan we just made and
   // report the winner instead of duplicating the candidate.

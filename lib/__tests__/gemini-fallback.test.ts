@@ -58,4 +58,20 @@ describe("model failover on provider errors (mocked SDK)", () => {
       generateSupportAnswer({ systemInstruction: "sys", history: [], message: "hi there, need help" }),
     ).rejects.toThrow(/empty answer/);
   });
+
+  it("pre-aborted caller signal fails fast without a fallback call", async () => {
+    let calls = 0;
+    genMock.mockImplementation(async () => {
+      calls++;
+      const err = new Error("This operation was aborted");
+      err.name = "AbortError";
+      throw err;
+    });
+    const ctrl = new AbortController();
+    ctrl.abort();
+    await expect(
+      generateSupportAnswer({ systemInstruction: "sys", history: [], message: "hi there, need help", signal: ctrl.signal }),
+    ).rejects.toThrow(/aborted/i);
+    expect(calls).toBe(1);
+  });
 });

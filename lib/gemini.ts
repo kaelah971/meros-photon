@@ -65,6 +65,9 @@ async function generateWithFallback<T>(
     (primary.status === "error" && isRetryable(primary.error));
   const fallback = getFallbackModel();
   if (!canFailOver || !fallback || fallback === primaryModel) throw primaryError;
+  // Caller already gave up: never start a second model attempt for
+  // nobody. Without this, an explicit cancel still spends a fallback call.
+  if (parent?.aborted) throw primaryError;
   console.log("[gemini] primary failed over, trying fallback model");
   const second = await attempt(fallback);
   if (second.status === "ok") {
@@ -129,6 +132,8 @@ export async function generateSupportAnswer(input: {
   history: ChatTurn[];
   message: string;
   attachments?: AttachmentPayload[];
+  /** Optional caller ceiling: aborting it cancels the whole model chain. */
+  signal?: AbortSignal;
 }): Promise<string> {
   const ai = getClient();
   const currentParts: { text?: string; inlineData?: { mimeType: string; data: string } }[] = [
@@ -143,8 +148,12 @@ export async function generateSupportAnswer(input: {
     { role: "user" as const, parts: currentParts },
   ];
   // Phase controller: the 45s ceiling cancels the whole fallback chain
-  // instead of abandoning it to burn quota in the background.
+  // instead of abandoning it to burn quota in the background. A caller
+  // ceiling (e.g. the iMessage phrasing bound) links in the same way.
   const phaseCtrl = new AbortController();
+  const onCallerAbort = () => phaseCtrl.abort();
+  if (input.signal?.aborted) phaseCtrl.abort();
+  else input.signal?.addEventListener("abort", onCallerAbort, { once: true });
   const phaseTimer = setTimeout(() => phaseCtrl.abort(), GEMINI_PHASE_TIMEOUT_MS);
   let settled: Settled<Awaited<ReturnType<typeof ai.models.generateContent>>>;
   try {
@@ -162,6 +171,7 @@ export async function generateSupportAnswer(input: {
     );
   } finally {
     clearTimeout(phaseTimer);
+    input.signal?.removeEventListener("abort", onCallerAbort);
     phaseCtrl.abort();
   }
   if (settled.status !== "ok") {
@@ -180,9 +190,14 @@ export async function generateSupportAnswer(input: {
 export async function generateJson(input: {
   systemInstruction: string;
   userText: string;
+  /** Optional caller ceiling: aborting it cancels the whole model chain. */
+  signal?: AbortSignal;
 }): Promise<unknown> {
   const ai = getClient();
   const phaseCtrl = new AbortController();
+  const onCallerAbort = () => phaseCtrl.abort();
+  if (input.signal?.aborted) phaseCtrl.abort();
+  else input.signal?.addEventListener("abort", onCallerAbort, { once: true });
   const phaseTimer = setTimeout(() => phaseCtrl.abort(), GEMINI_PHASE_TIMEOUT_MS);
   let settled: Settled<Awaited<ReturnType<typeof ai.models.generateContent>>>;
   try {
@@ -204,6 +219,7 @@ export async function generateJson(input: {
     );
   } finally {
     clearTimeout(phaseTimer);
+    input.signal?.removeEventListener("abort", onCallerAbort);
     phaseCtrl.abort();
   }
   if (settled.status !== "ok") {

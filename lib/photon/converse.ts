@@ -25,7 +25,7 @@ import type { StatsSnapshot } from "./operator";
 export const CONVERSE_NORMAL_MAX = 500;
 export const CONVERSE_DETAILED_MAX = 1500;
 const CLASSIFY_TIMEOUT_MS = 9_000;
-const PHRASE_TIMEOUT_MS = 12_000;
+const PHRASE_TIMEOUT_MS = 25_000;
 const MAX_HISTORY_TURNS = 10;
 const MAX_TURN_CHARS = 300;
 
@@ -291,7 +291,7 @@ You receive FACTS verified from the workspace database plus the operator's quest
 - Keep it iMessage-sized: short paragraphs, plain words, no JSON, no robotic command menus, no corporate chatbot language. No fake urgency, no unsupported reassurance ("all fixed!" is forbidden unless FACTS say resolved).
 - When a SHORT REF like #a1b2c3d4 is given, include it so follow-ups work.
 - Do NOT invent links or URLs — a console link is appended separately when relevant.
-- Answer the question directly, add one line on why it matters when useful, and at most ONE gentle next-step suggestion when genuinely useful. Do not end every reply with a question.
+- Answer the question directly, add one line on why it matters when useful, and at most ONE useful next step. A compound question (what happened + what is unknown + what next) must answer every part — use the labeled KNOWN / UNKNOWN / NEXT STEPS facts when given. When NEXT STEPS facts are given, always end with that recommended next step. Do not end every reply with a question.
 - An action the operator asked to perform (approve, send, fix, close, change) was NOT performed: explain briefly it needs the staff console.
 - Shape every reply the same way: direct answer first, then relevant context on its own paragraph (one blank line between paragraphs), then at most ONE useful next step. Short sentences, everyday words.
 - Operator-friendly words: say "possible recurring problem" not "candidate", "things needing review" not "pending decisions", "your team inbox" not "workspace", "looks like" not "inferred". Still quote exact stored states (investigating, pending) verbatim when giving them.
@@ -312,7 +312,18 @@ export async function defaultPhrase(input: PhraseInput): Promise<string> {
     `Reply in ${cap} characters or fewer.`,
   ].join("\n");
   const settled = await settleWithTimeout(
-    generateSupportAnswer({ systemInstruction: PHRASE_SYSTEM, history, message }),
+    (async () => {
+      // Caller ceiling: aborting here cancels the SDK chain instead of
+      // abandoning it to burn quota in the background past our bound.
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), PHRASE_TIMEOUT_MS);
+      try {
+        return await generateSupportAnswer({ systemInstruction: PHRASE_SYSTEM, history, message, signal: ctrl.signal });
+      } finally {
+        clearTimeout(timer);
+        ctrl.abort();
+      }
+    })(),
     PHRASE_TIMEOUT_MS,
   );
   if (settled.status === "timeout") throw new Error("converse phrase timed out");
@@ -329,6 +340,10 @@ export type SelectedDetail = {
   shortRef: string;
   detail: string;
   stale: boolean;
+  /** Evidence state behind the detail; drives grounded next-step hints. */
+  briefState?: "missing" | "stale" | "current" | "pending" | "failed";
+  /** Precomputed read-only next step; present when evidence supports one. */
+  nextStep?: string;
 };
 
 export type ConverseContext = {
@@ -533,6 +548,48 @@ export async function gatherContext(input: {
   };
 }
 
+/**
+ * Collapse near-duplicate complaint quotes into distinct findings.
+ * Raw observations are overlapping customer quotes; joining them raw
+ * produces repeated run-on fragments. Normalized containment drops
+ * restatements while keeping genuinely different details, in order.
+ */
+function distinctObservations(facts: { observation: string }[], max: number): string[] {
+  const out: string[] = [];
+  const seen: string[] = [];
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+  for (const f of facts) {
+    const clean = f.observation.replace(/\s+/g, " ").trim();
+    if (!clean) continue;
+    const n = norm(clean);
+    if (!n || seen.some((s) => s.includes(n) || n.includes(s))) continue;
+    seen.push(n);
+    out.push(/[.!?]$/.test(clean) ? clean : `${clean}.`);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+type BriefState = "missing" | "stale" | "current" | "pending" | "failed";
+
+/**
+ * One grounded, read-only next step derived from evidence state — never
+ * invented causes, fixes, or executions. Everything that changes state
+ * goes through the staff console.
+ */
+function suggestNextStep(briefState: BriefState, hasUnknowns: boolean): string {
+  if (briefState === "missing" || briefState === "pending" || briefState === "failed") {
+    return "Link the latest customer report so the evidence brief assembles, then review it in the staff console.";
+  }
+  if (briefState === "stale") {
+    return "The evidence moved on — open the incident in the staff console to review the fresh reports.";
+  }
+  if (hasUnknowns) {
+    return "Dig into the open question in the linked reports, then review the incident in the staff console.";
+  }
+  return "Open the incident in the staff console to review the linked reports and decide the next move.";
+}
+
 async function loadSelectedDetail(
   reads: InvestigateReads,
   workspaceId: string,
@@ -559,6 +616,7 @@ async function loadSelectedDetail(
     kind === "seen_before" ? reads.getMatches(option.id, workspaceId).catch(() => null) : Promise.resolve(null),
   ]);
   if (!inc) return { option, shortRef: ref, detail: "", stale: false };
+  const briefState: BriefState = !brief ? "missing" : brief.status === "current" ? "current" : (brief.status as BriefState);
   const parts = [
     `Incident: ${inc.title} [${inc.status}, ${inc.severity}].`,
     `Affects ${inc.customers} customers across ${inc.conversations} conversations.`,
@@ -569,16 +627,17 @@ async function loadSelectedDetail(
       stale = true;
       parts.push(`Evidence brief is ${brief.status} (v${brief.version}) — not current, treat findings as outdated.`);
     } else {
-      const facts = brief.facts
-        .slice(0, 3)
-        .map((f) => f.observation.slice(0, 120))
-        .join(" ");
-      if (facts) parts.push(`What we know: ${facts}`);
-      if (brief.unknowns.length > 0) parts.push(`Still unknown: ${brief.unknowns.slice(0, 2).join("; ").slice(0, 160)}`);
+      const known = distinctObservations(brief.facts.map((f) => ({ observation: f.observation })), 3);
+      if (known.length > 0) parts.push(`What we know: ${known.join(" ")}`);
+      if (brief.unknowns.length > 0) parts.push(`Still unknown: ${brief.unknowns.slice(0, 2).join("; ")}.`);
       if (brief.contradictions.length > 0) {
-        parts.push(`Conflicting evidence: ${brief.contradictions.slice(0, 2).join("; ").slice(0, 160)}`);
+        parts.push(`Conflicting evidence: ${brief.contradictions.slice(0, 2).join("; ")}.`);
       }
     }
+  }
+  const nextStep = suggestNextStep(briefState, (brief?.unknowns.length ?? 0) > 0);
+  if (kind === "sofar" || kind === "why_related") {
+    parts.push(`Suggested next step (read-only — anything that changes state needs the staff console): ${nextStep}`);
   }
   if (kind === "seen_before" && matches) {
     if (!matches.current) {
@@ -595,7 +654,7 @@ async function loadSelectedDetail(
       );
     }
   }
-  return { option, shortRef: ref, detail: parts.join(" "), stale };
+  return { option, shortRef: ref, detail: parts.join(" "), stale, briefState, nextStep };
 }
 
 // ---- Facts text for the phrasing model (bounded, verified only) ----
@@ -652,6 +711,14 @@ export function factsText(ctx: ConverseContext, plan: ConversePlan, slug: string
     lines.push(
       `SELECTED ${ctx.selected.option.kind.toUpperCase()} #${ctx.selected.shortRef}: ${ctx.selected.detail || "(record no longer available — say so honestly)"}${ctx.selected.stale ? " [STALE — label as outdated]" : ""}`,
     );
+    if (
+      ctx.selected.nextStep &&
+      (plan.kind === "sofar" || plan.kind === "why_related" || plan.kind === "seen_before" || plan.kind === "next_steps")
+    ) {
+      lines.push(
+        `NEXT STEPS (grounded read-only options — always recommend exactly this next step, never claim execution): ${ctx.selected.nextStep}`,
+      );
+    }
   } else if (
     plan.kind === "why_related" ||
     plan.kind === "sofar" ||

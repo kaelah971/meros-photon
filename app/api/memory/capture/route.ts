@@ -9,7 +9,8 @@ import {
   validateExtractedFacts,
   type ExtractedFact,
 } from "@/lib/support-memory";
-import { WalrusNotConfiguredError, rememberPrivate } from "@/lib/walrus";
+import { WalrusNotConfiguredError, classifyMemwalError, rememberPrivate, type MemwalFailureKind } from "@/lib/walrus";
+import { isWalrusConfigured } from "@/lib/env";
 
 const EXTRACTION_SYSTEM = `You extract durable support-memory facts from one support turn. Return a JSON array (max 3 items) of {"type","text"}.
 Types: PROFILE (stable user environment/preference), ISSUE (problem symptom), ATTEMPT (troubleshooting step tried + outcome), RESOLUTION (confirmed fix), CORRECTION (new fact superseding older info).
@@ -25,6 +26,8 @@ export type CaptureResult = {
   status: "stored" | "failed" | "skipped";
   blobId?: string;
   error?: string;
+  /** Privacy-safe write-failure category (auth/timeout/unavailable/...). */
+  errorKind?: MemwalFailureKind;
 };
 
 /**
@@ -59,6 +62,15 @@ export async function POST(req: Request) {
   const answer = typeof body.answer === "string" ? body.answer.trim() : "";
   if (!message || message.length < 12) {
     return NextResponse.json({ ok: true, facts: [], note: "turn too short to capture" });
+  }
+  // Fail honest when credentials are missing: per-fact handlers below must
+  // not downgrade this to ok:true/failed (that masked deploys with no keys).
+  if (!isWalrusConfigured()) {
+    const blocker = new WalrusNotConfiguredError();
+    return NextResponse.json(
+      { ok: false, error: blocker.message, needed: blocker.needed },
+      { status: 503 },
+    );
   }
   const history: ChatTurn[] = Array.isArray(body.history)
     ? (body.history as ChatTurn[]).filter((t) => t && typeof t.text === "string").slice(-4)
@@ -112,11 +124,16 @@ export async function POST(req: Request) {
         const done = await rememberPrivate(tenant.privateNamespace, f.text);
         results.push({ type: f.type, text: f.text, status: "stored", blobId: done.blobId });
       } catch (e) {
+        // Never mask a missing-credential deploy as a per-fact write fail.
+        if (e instanceof WalrusNotConfiguredError) throw e;
+        const classified = classifyMemwalError(e);
+        console.log(`[capture] private write ${classified.kind} (${f.type})`);
         results.push({
           type: f.type,
           text: f.text,
           status: "failed",
-          error: e instanceof Error ? e.message : "walrus write failed",
+          error: classified.message,
+          errorKind: classified.kind,
         });
       }
     }

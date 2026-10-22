@@ -99,7 +99,7 @@ export async function getIncidentBrief(incidentId: string, workspaceId: string):
     status: r.status as BriefStatus,
     version: r.version as number,
     fingerprint: r.fingerprint as string,
-    findings: (r.findings ?? { facts: [], corroborated: [], contradictions: [], unknowns: [], hypotheses: [] }) as BriefFindings,
+    findings: normalizeBriefFindings(r.findings),
     source_count: r.source_count as number,
     generated_at: (r.generated_at as string | null) ?? null,
     error: (r.error as string | null) ?? null,
@@ -139,6 +139,28 @@ function str(v: unknown, max: number): string | null {
 
 function knownId(v: unknown, known: ReadonlySet<string>): string | null {
   return typeof v === "string" && known.has(v) ? v : null;
+}
+
+/**
+ * Read-side normalization for persisted brief findings. The
+ * incident_evidence_briefs.findings column defaults to '{}', and the
+ * pending-claim insert omits findings — so a mid-build row carries an
+ * empty object, NOT null, and `?? defaults` cannot save readers. Every
+ * array field is coerced (missing/null/non-array → []) so a newly
+ * accepted incident with a still-assembling brief renders empty states
+ * instead of crashing on `facts.length`. Entries themselves are passed
+ * through (writes are strictly validated); only the containers are fixed.
+ */
+export function normalizeBriefFindings(raw: unknown): BriefFindings {
+  const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const arr = <T>(v: unknown): T[] => (Array.isArray(v) ? (v as T[]) : []);
+  return {
+    facts: arr<BriefFinding>(r.facts),
+    corroborated: arr<BriefCorroboration>(r.corroborated),
+    contradictions: arr<BriefContradiction>(r.contradictions),
+    unknowns: arr<string>(r.unknowns),
+    hypotheses: arr<BriefHypothesis>(r.hypotheses),
+  };
 }
 
 /**
@@ -236,7 +258,7 @@ export async function realBriefStore(): Promise<BriefStore> {
     status: r.status as BriefStatus,
     version: r.version as number,
     fingerprint: r.fingerprint as string,
-    findings: (r.findings ?? { facts: [], corroborated: [], contradictions: [], unknowns: [], hypotheses: [] }) as BriefFindings,
+    findings: normalizeBriefFindings(r.findings),
     source_count: r.source_count as number,
     generated_at: (r.generated_at as string | null) ?? null,
     error: (r.error as string | null) ?? null,
@@ -253,9 +275,12 @@ export async function realBriefStore(): Promise<BriefStore> {
       return rows[0] ? toRow(rows[0]) : null;
     },
     insertPending: async (incidentId, workspaceId, fingerprint, sourceCount) => {
+      // Write explicit empty findings (never rely on the '{}' column
+      // default): a pending row must already be render-safe if the builder
+      // crashes before completing.
       const rows = (await sql`
-        insert into incident_evidence_briefs (incident_id, workspace_id, status, version, fingerprint, source_count)
-        values (${incidentId}, ${workspaceId}, 'pending', 1, ${fingerprint}, ${sourceCount})
+        insert into incident_evidence_briefs (incident_id, workspace_id, status, version, fingerprint, findings, source_count)
+        values (${incidentId}, ${workspaceId}, 'pending', 1, ${fingerprint}, ${JSON.stringify({ facts: [], corroborated: [], contradictions: [], unknowns: [], hypotheses: [] })}::jsonb, ${sourceCount})
         on conflict (incident_id) do nothing
         returning incident_id
       `) as unknown as { incident_id: string }[];

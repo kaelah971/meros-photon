@@ -1,6 +1,7 @@
 import { describe, expect, it, afterAll, vi } from "vitest";
 import {
   fingerprintSources,
+  normalizeBriefFindings,
   refreshBriefIfNeeded,
   validateBriefFindings,
   type BriefJudge,
@@ -135,6 +136,31 @@ describe("evidence validation (pure)", () => {
   it("fingerprints are stable and order-independent", () => {
     expect(fingerprintSources(["b", "a", "c"])).toBe(fingerprintSources(["c", "b", "a"]));
     expect(fingerprintSources(["a"])).not.toBe(fingerprintSources(["a", "b"]));
+  });
+
+  it("pending-claim '{}' findings normalize to empty arrays (never crash readers)", () => {
+    expect(normalizeBriefFindings({})).toEqual({
+      facts: [],
+      corroborated: [],
+      contradictions: [],
+      unknowns: [],
+      hypotheses: [],
+    });
+  });
+
+  it("null/undefined/non-object findings normalize to empty arrays", () => {
+    for (const raw of [null, undefined, "x", 42, []]) {
+      const f = normalizeBriefFindings(raw);
+      expect(f.facts).toEqual([]);
+      expect(f.unknowns).toEqual([]);
+    }
+  });
+
+  it("null array fields become [] while present entries pass through", () => {
+    const f = normalizeBriefFindings({ facts: null, unknowns: ["a"], hypotheses: "nope" });
+    expect(f.facts).toEqual([]);
+    expect(f.unknowns).toEqual(["a"]);
+    expect(f.hypotheses).toEqual([]);
   });
 });
 

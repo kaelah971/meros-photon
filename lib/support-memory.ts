@@ -339,6 +339,7 @@ export function validateSharedCandidate(
 export function validateExtractedFacts(raw: unknown): ExtractedFact[] {
   if (!Array.isArray(raw)) return [];
   const out: ExtractedFact[] = [];
+  const seen = new Set<string>();
   for (const item of raw.slice(0, 3)) {
     if (!item || typeof item !== "object") continue;
     const { type, text } = item as { type?: unknown; text?: unknown };
@@ -348,6 +349,11 @@ export function validateExtractedFacts(raw: unknown): ExtractedFact[] {
     const clean = text.trim().replace(/^\[[A-Za-z_]+\]\s*/, "");
     if (clean.length < 10 || clean.length > 500) continue;
     if (checkRedaction(clean).passed === false) continue;
+    // One fact, one write: identical facts in a single extraction batch
+    // collapse to a single write so a turn can never store duplicates.
+    const key = `${t}:${clean.toLowerCase().replace(/\s+/g, " ").trim()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
     out.push({ type: t as MemoryType, text: `[${t}] ${clean}` });
   }
   return out;

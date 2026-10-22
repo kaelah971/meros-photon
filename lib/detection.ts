@@ -250,5 +250,13 @@ export async function detectFromChat(
     await deps.store.deleteCandidate(created.id, input.workspaceId).catch(() => null);
     return { action: "already_clustered", candidateId: attached.duplicateOf };
   }
+  if (!attached || !attached.messageAdded) {
+    // The candidate row exists but the report was NOT linked (transient
+    // store failure or verification mismatch). Claiming "created" here
+    // would strand an empty candidate while the report stays invisible
+    // to Radar. Defer honestly instead: a later genuine report can still
+    // join this pending candidate; nothing is duplicated or invented.
+    return { action: "deferred" };
+  }
   return { action: "created", candidateId: created.id };
 }

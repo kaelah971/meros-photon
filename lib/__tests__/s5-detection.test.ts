@@ -253,6 +253,28 @@ describe("detection orchestration (fakes)", () => {
     expect(s.cands.size).toBe(1);
   });
 
+  it("failed attribution after create defers honestly instead of claiming created", async () => {
+    const s = makeStore();
+    s.addConversation("c1", W1, "cu1");
+    const m = { id: "m1", conversationId: "c1", customerId: "cu1", text: "Visa checkout error 500 blocks every single order I place today" };
+    s.addMessage(m);
+    const base = depsFor(s, tokenJudge([["visa"]]));
+    // Production 2026-10-22: candidate row written, attach failed (null).
+    // Must NOT report created for an empty, unlinked candidate.
+    const failing = { ...base, store: { ...base.store, addMessageToCandidate: async () => null } } as DetectDeps;
+    const r1 = await detectFromChat(inputFor(m), failing);
+    expect(r1.action).toBe("deferred");
+    expect(s.cands.size).toBe(1);
+    const orphan = [...s.cands.values()][0];
+    expect(orphan.messages).toHaveLength(0);
+    // A later genuine report can still join the pending orphan — no dupes.
+    const m2 = { id: "m2", conversationId: "c1", customerId: "cu1", text: "Visa checkout error 500 again this morning, still blocked badly" };
+    s.addMessage(m2);
+    const r2 = await detectFromChat(inputFor(m2), depsFor(s, tokenJudge([["visa"]])));
+    expect(r2.action).toBe("joined");
+    expect(s.cands.size).toBe(1);
+  });
+
   it("concurrent processing does not duplicate the first candidate", async () => {
     const s = makeStore();
     s.addConversation("c1", W1, "cu1");

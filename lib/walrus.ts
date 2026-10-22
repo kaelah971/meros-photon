@@ -232,6 +232,15 @@ export function classifyMemwalError(e: unknown): { kind: MemwalFailureKind; mess
       message: `Walrus relayer unavailable (status ${status}). Transient; safe to retry.`,
     };
   }
+  // A 404 from the relayer edge means the service endpoint itself is not
+  // serving (e.g. upstream deployment/DNS incident), not a bad client
+  // path — the SDK only calls known routes. Transient from our side.
+  if (status === 404) {
+    return {
+      kind: "unavailable",
+      message: "Walrus relayer endpoint not found (404). Upstream serving incident; safe to retry.",
+    };
+  }
   if (/fetch failed|ECONN|ENOTFOUND|EAI_AGAIN|socket hang up|network/i.test(msg)) {
     return { kind: "unavailable", message: "Walrus relayer unreachable (network). Transient; safe to retry." };
   }

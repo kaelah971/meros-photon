@@ -91,6 +91,14 @@ describe("classifyMemwalError (privacy-safe taxonomy)", () => {
     expect(classifyMemwalError(new Error("fetch failed")).kind).toBe("unavailable");
   });
 
+  it("unavailable for relayer-edge 404 (service not serving)", () => {
+    const err = new Error("Health check failed: 404") as Error & { status: number };
+    err.status = 404;
+    const out = classifyMemwalError(err);
+    expect(out.kind).toBe("unavailable");
+    expect(out.message).not.toMatch(/secret/i);
+  });
+
   it("never echoes raw server bodies", () => {
     const err = new Error("Walrus Memory server error (500): <secret-blob-payload>") as Error & {
       status: number;

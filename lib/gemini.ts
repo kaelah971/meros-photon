@@ -1,7 +1,7 @@
 import "server-only";
 import { GoogleGenAI } from "@google/genai";
 import { isGeminiConfigured } from "./env";
-import { isRetryable, settleWithTimeout, withRetry } from "./retry";
+import { isRetryable, settleWithTimeout, withRetry, type Settled } from "./retry";
 import { buildAttachmentParts, type AttachmentPayload } from "./attachments";
 
 export { withRetry as withGeminiRetry };
@@ -24,12 +24,32 @@ export function getFallbackModel(): string | null {
 // Per-model wall-clock ceiling (~20s). The SDK already retries once
 // internally, so model calls are NOT wrapped in outer withRetry — that
 // stacking previously produced 90–240s waits. One ceiling per model,
-// then fail over or fail honestly.
+// then fail over or fail honestly. The ceiling CANCELS in-flight work via
+// AbortSignal (config.abortSignal): without this, an abandoned attempt
+// keeps its socket + SDK retry alive in the background, burning quota
+// and amplifying the very overload that caused the timeout.
 const PER_MODEL_TIMEOUT_MS = 20_000;
 
-async function generateWithFallback<T>(run: (model: string) => Promise<T>): Promise<T> {
+async function generateWithFallback<T>(
+  run: (model: string, signal: AbortSignal) => Promise<T>,
+  parent?: AbortSignal,
+): Promise<T> {
+  const attempt = (model: string): Promise<Settled<T>> => {
+    const ctrl = new AbortController();
+    const onParentAbort = () => ctrl.abort();
+    if (parent?.aborted) ctrl.abort();
+    else parent?.addEventListener("abort", onParentAbort, { once: true });
+    const timer = setTimeout(() => ctrl.abort(), PER_MODEL_TIMEOUT_MS);
+    const settled = settleWithTimeout(run(model, ctrl.signal), PER_MODEL_TIMEOUT_MS);
+    return settled.finally(() => {
+      clearTimeout(timer);
+      parent?.removeEventListener("abort", onParentAbort);
+      // Stop burning quota/sockets on work nobody is waiting for anymore.
+      ctrl.abort();
+    });
+  };
   const primaryModel = getPrimaryModel();
-  const primary = await settleWithTimeout(run(primaryModel), PER_MODEL_TIMEOUT_MS);
+  const primary = await attempt(primaryModel);
   if (primary.status === "ok") {
     console.log("[gemini] ok via primary");
     return primary.value;
@@ -46,7 +66,7 @@ async function generateWithFallback<T>(run: (model: string) => Promise<T>): Prom
   const fallback = getFallbackModel();
   if (!canFailOver || !fallback || fallback === primaryModel) throw primaryError;
   console.log("[gemini] primary failed over, trying fallback model");
-  const second = await settleWithTimeout(run(fallback), PER_MODEL_TIMEOUT_MS);
+  const second = await attempt(fallback);
   if (second.status === "ok") {
     console.log("[gemini] ok via fallback");
     return second.value;
@@ -122,16 +142,28 @@ export async function generateSupportAnswer(input: {
     })),
     { role: "user" as const, parts: currentParts },
   ];
-  const settled = await settleWithTimeout(
-    generateWithFallback((model) =>
-      ai.models.generateContent({
-        model,
-        contents,
-        config: { systemInstruction: input.systemInstruction },
-      }),
-    ),
-    GEMINI_PHASE_TIMEOUT_MS,
-  );
+  // Phase controller: the 45s ceiling cancels the whole fallback chain
+  // instead of abandoning it to burn quota in the background.
+  const phaseCtrl = new AbortController();
+  const phaseTimer = setTimeout(() => phaseCtrl.abort(), GEMINI_PHASE_TIMEOUT_MS);
+  let settled: Settled<Awaited<ReturnType<typeof ai.models.generateContent>>>;
+  try {
+    settled = await settleWithTimeout(
+      generateWithFallback(
+        (model, signal) =>
+          ai.models.generateContent({
+            model,
+            contents,
+            config: { systemInstruction: input.systemInstruction, abortSignal: signal },
+          }),
+        phaseCtrl.signal,
+      ),
+      GEMINI_PHASE_TIMEOUT_MS,
+    );
+  } finally {
+    clearTimeout(phaseTimer);
+    phaseCtrl.abort();
+  }
   if (settled.status !== "ok") {
     throw new Error(
       settled.status === "timeout"
@@ -150,19 +182,30 @@ export async function generateJson(input: {
   userText: string;
 }): Promise<unknown> {
   const ai = getClient();
-  const settled = await settleWithTimeout(
-    generateWithFallback((model) =>
-      ai.models.generateContent({
-        model,
-        contents: [{ role: "user", parts: [{ text: input.userText }] }],
-        config: {
-          systemInstruction: input.systemInstruction,
-          responseMimeType: "application/json",
-        },
-      }),
-    ),
-    GEMINI_PHASE_TIMEOUT_MS,
-  );
+  const phaseCtrl = new AbortController();
+  const phaseTimer = setTimeout(() => phaseCtrl.abort(), GEMINI_PHASE_TIMEOUT_MS);
+  let settled: Settled<Awaited<ReturnType<typeof ai.models.generateContent>>>;
+  try {
+    settled = await settleWithTimeout(
+      generateWithFallback(
+        (model, signal) =>
+          ai.models.generateContent({
+            model,
+            contents: [{ role: "user", parts: [{ text: input.userText }] }],
+            config: {
+              systemInstruction: input.systemInstruction,
+              responseMimeType: "application/json",
+              abortSignal: signal,
+            },
+          }),
+        phaseCtrl.signal,
+      ),
+      GEMINI_PHASE_TIMEOUT_MS,
+    );
+  } finally {
+    clearTimeout(phaseTimer);
+    phaseCtrl.abort();
+  }
   if (settled.status !== "ok") {
     throw new Error(
       settled.status === "timeout"

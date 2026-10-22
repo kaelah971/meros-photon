@@ -12,15 +12,24 @@ const BASE_DELAY_MS = 800;
  * timeouts are transient by nature: safe to fail over / retry bounded.
  */
 export function isAbortLike(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e);
+  // The GenAI SDK deliberately raises AbortError for NON-retryable HTTP
+  // statuses ("Non-retryable exception ..."): that is a verdict, not a
+  // transport abort — it must never be retried or failed over.
+  if (/non-retryable/i.test(msg)) return false;
   const name = e instanceof Error ? e.name : "";
   if (name === "AbortError" || /abort/i.test(name)) return true;
-  const msg = e instanceof Error ? e.message : String(e);
   return /abort|timed\s*out|\btimeout\b|ETIMEDOUT|ECONNRESET|EAI_AGAIN|socket hang up/i.test(msg);
 }
 
 export function isRetryable(e: unknown): boolean {
   if (isAbortLike(e)) return true;
   const msg = e instanceof Error ? e.message : String(e);
+  if (/non-retryable/i.test(msg)) return false;
+  // The GenAI SDK surfaces exhausted retries as verdict text WITHOUT a
+  // numeric code ("Retryable HTTP Error: Service unavailable") — honor
+  // the SDK's own retryable verdict so model failover can still trigger.
+  if (/retryable|service unavailable|too many requests|overloaded|rate.?limit|high demand/i.test(msg)) return true;
   const m = msg.match(/"code"\s*:\s*(\d{3})/) || msg.match(/\b(50[0234]|429|408)\b/);
   return m ? RETRYABLE_CODES.has(Number(m[1])) : false;
 }

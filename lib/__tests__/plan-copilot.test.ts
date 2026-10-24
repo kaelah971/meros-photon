@@ -592,3 +592,61 @@ describe("P7 incident selection (topic beats recency)", () => {
     expect(res.body).toContain("Here's what I'd check first");
   });
 });
+
+describe("P7.1 truncated-history confirmation (real persistence path)", () => {
+  const TRACK = "8847f10d-a20c-493f-8af9-5f07afa2f319";
+  const trackRow = {
+    id: TRACK, title: "Tracking page shows parcel delivered but customer received nothing",
+    status: "investigating", severity: "high", customers: 3, conversations: 3,
+    evidence: 4, updatedAt: new Date().toISOString(),
+  };
+  // Mirror bot.ts loadHistory: persisted outbound text, sliced to 300 chars.
+  const excerpt = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, 300);
+
+  async function confirmationTurn(): Promise<{ fitted: string; prompt: string }> {
+    const { handlePlanRequest } = await import("../photon/plan-copilot");
+    const { fitConverse } = await import("../photon/converse");
+    const res = await handlePlanRequest({
+      selection: { state: "selected", option: { kind: "incident", id: TRACK, title: trackRow.title } },
+      workspaceId: WS, slug: "demo-shop", authorized: false,
+      runPlan: async () => { throw new Error("must not run without YES"); },
+      getIncident: async () => ({ ...trackRow }),
+    });
+    // runConversational fits body+link exactly like the production path.
+    const fitted = fitConverse(res.body, res.link, false);
+    return { fitted, prompt: res.body };
+  }
+
+  it("confirmation binding survives fitConverse + 300-char history truncation", async () => {
+    const { matchDraftConfirmation } = await import("../photon/plan-copilot");
+    const { fitted } = await confirmationTurn();
+    // The sent message must be complete: incident named, YES asked, link kept.
+    expect(fitted).toContain("Reply YES");
+    expect(fitted).toContain("https://");
+    const m = matchDraftConfirmation("YES", [{ role: "assistant", text: excerpt(fitted) }]);
+    expect(m).toEqual({ shortRef: TRACK.slice(0, 8) });
+  });
+
+  it("YES through the truncated path drafts exactly the bound incident", async () => {
+    const { matchDraftConfirmation } = await import("../photon/plan-copilot");
+    const { fitted } = await confirmationTurn();
+    const history = [{ role: "assistant" as const, text: excerpt(fitted) }];
+    expect(matchDraftConfirmation("Yes, please.", history)).toEqual({ shortRef: TRACK.slice(0, 8) });
+    let runs: string[] = [];
+    const rt = baseRuntime({
+      text: "Yes, please.",
+      history,
+      reads: makeReads({
+        listActiveIncidents: async () => [trackRow],
+        listReviewCandidates: async () => [],
+        getIncident: async (id, ws) => (id === TRACK && ws === WS ? trackRow : null),
+      }),
+      classify: async () => { throw new Error("model must not authorize"); },
+      phrase: async () => { throw new Error("phrase must not run"); },
+      runPlan: async (id) => { runs.push(id); return builtResult(); },
+    });
+    const out = await runConversational(rt);
+    expect(out.kind).toBe("plan_request");
+    expect(runs).toEqual([TRACK]);
+  });
+});

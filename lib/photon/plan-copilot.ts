@@ -155,7 +155,7 @@ export async function handlePlanRequest(input: {
     // contextual confirmation bound to THIS incident, or the exact phrase.
     // matchDraftConfirmation accepts the YES only against this prompt.
     return {
-      body: `${context}\n\nYeah, I can do that. I've got the reports and the evidence is in — though we haven't confirmed why it's happening yet, so I'll focus on investigating that first.\n\nWant me to put together a draft for you to review? Reply YES and I'll draft it for #${short(inc.id)}. Nothing gets approved or sent from here.`,
+      body: `${context}\n\nWant me to draft the recovery plan? Reply YES and I'll draft #${short(inc.id)} for review. Nothing is approved or sent from here.\n\nThe evidence brief is ready, though we haven't confirmed the cause yet.`,
       link: incidentLink(slug, inc.id),
     };
   }

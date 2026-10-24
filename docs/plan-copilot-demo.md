@@ -9,15 +9,16 @@ phone, same cleanup. No production sends, no approvals, no customer messages.
    Expected: grounded summary — incident title/status, affected
    customers/conversations, known facts, unknowns. No invented causes.
 2. Owner: **"What should we do?"**
-   Expected: read-only next steps plus the existing validated draft if one
-   exists ("Validated draft plan vN (DRAFT, needs human review)").
+   Expected: read-only next steps plus any existing draft recovery plan
+   ("There's already a draft, still needs your review").
 3. Owner: **"Draft a recovery plan for this."** (or "Can you put together a plan for me?")
    Expected: explicit phrase drafts at once; inferred phrasing gets a
    confirmation first (`Reply YES` bound to that incident), and a plain
-   `Yes` completes it — no memorized command needed. Result: `DRAFT —
-   planning only, needs human review, not approved`, top diagnostic steps,
-   overall risk, open unknowns, and a staff-console review link.
-   Unchanged evidence returns the existing draft (no duplicate).
+   `Yes` completes it — no memorized command needed. Result: a warm summary
+   ("I've put together a draft… it needs your review before anything
+   happens"), top diagnostic steps, overall risk, open unknowns, and one
+   staff-console review link. Unchanged evidence returns the existing draft
+   (no duplicate).
 
 ## Proof to capture
 
@@ -33,7 +34,7 @@ phone, same cleanup. No production sends, no approvals, no customer messages.
 
 ## Safety lines that must hold on the screenshots
 
-- Every draft message says DRAFT / planning-only / needs human review.
+- Every draft message says it needs human review and that nothing is approved or sent.
 - No message claims approval, execution, customer sends, or verification.
 - No customer names, message text, phone numbers, or keys visible.
 

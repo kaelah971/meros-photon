@@ -17,7 +17,8 @@ import { incidentLink } from "./investigate";
 // - Planning only: drafts are created via the existing validated
 //   generatePlanIfNeeded. Nothing here approves, executes, messages
 //   customers, changes incident status, or claims verification.
-// - Replies label every draft DRAFT / planning-only / needs human review.
+// - Every draft reply says plainly that it needs human review and that
+//   nothing is approved or sent — no jargon, no raw statuses.
 
 export type CopilotOption = { kind: "candidate" | "incident"; id: string; title: string };
 
@@ -47,7 +48,7 @@ const clean = (s: string, n: number) => s.replace(/\s+/g, " ").trim().slice(0, n
  * "yes" answers never authorize anything. Returns the bound short ref so
  * the caller revalidates it against live workspace records. Pure.
  */
-const CONFIRM_RE = /^\s*(yes|yeah|yep|yup|do it|go ahead|please do|draft it|confirm(?:ed)?|ok(?:ay)?(?: do it| draft it)?|sure(?: do it)?|sounds good|lets do it|let's do it)\s*[!.?]*$/i;
+const CONFIRM_RE = /^\s*(yes|yeah|yep|yup|do it|go ahead|please do|draft it|confirm(?:ed)?|ok(?:ay)?(?: do it| draft it)?|sure(?: do it)?|sounds good|lets do it|let's do it)(\s*,?\s*please)?\s*[!.?]*$/i;
 const CONFIRM_PROMPT_RE = /reply YES[^\n]*#([0-9a-f]{8,})/i;
 
 export function matchDraftConfirmation(
@@ -69,14 +70,31 @@ function planLines(payload: {
   riskLevel: string;
   missingInfo: string[];
 }): string[] {
-  const lines = payload.steps.slice(0, 3).map(
-    (s, i) => `${i + 1}. [${s.kind}] ${clean(s.description, 120)}`,
-  );
-  lines.push(`Overall risk: ${payload.riskLevel}.`);
+  const lines = payload.steps
+    .slice(0, 3)
+    .map((s, i) => `${i + 1}. ${clean(s.description, 140)}`);
+  lines.push(`Overall risk looks ${payload.riskLevel}.`);
   if (payload.missingInfo.length > 0) {
-    lines.push(`Still unknown: ${clean(payload.missingInfo[0], 140)}`);
+    lines.push(`We still don't know: ${clean(payload.missingInfo[0], 140)}`);
   }
   return lines;
+}
+
+/** Plain-words cause for a failed draft. Categories stay machine-usable
+ * upstream; iMessage gets everyday language, never raw model output. */
+function plainFailureCause(error: string): string {
+  const e = error.toLowerCase();
+  if (e.includes("no_step_cited_authorized_evidence"))
+    return "I couldn't tie the next steps to the reported evidence";
+  if (e.includes("steps_rejected_safety_or_ownership"))
+    return "a step missed a safety check";
+  if (e.includes("high_risk_without_approval_warning"))
+    return "a high-risk step missed its approval warning";
+  if (e.includes("unsupported_certainty") || e.includes("executable"))
+    return "the wording overstated what we actually know";
+  if (e.includes("empty_or_malformed") || e.includes("missing_summary"))
+    return "the model didn't come back with anything usable";
+  return "the draft didn't check out";
 }
 
 /**
@@ -122,7 +140,7 @@ export async function handlePlanRequest(input: {
   const { option } = selection;
   if (option.kind !== "incident") {
     return {
-      body: `That's still an unconfirmed grouping, not a confirmed incident — I can only draft for confirmed incidents.\n\nReview it in the staff console first; once accepted I'll draft the recovery plan here. #${short(option.id)}`,
+      body: `That's still something we're looking into, not a confirmed incident yet — I can only draft once it's confirmed.\n\nTake a look in the staff console first; once it's accepted I'll draft the recovery plan here.`,
       link: `/app/workspaces/${slug}/incidents/detected/${option.id}`,
     };
   }
@@ -130,13 +148,14 @@ export async function handlePlanRequest(input: {
   if (!inc) {
     return { body: `That record isn't available anymore — try "incidents" for what's live.`, link: `/app/workspaces/${slug}/incidents` };
   }
-  const context = `"${clean(inc.title, 80)}" [${inc.status}, ${inc.severity}] — ${inc.customers} customers across ${inc.conversations} conversations.`;
+  const stateWords = inc.status === "resolved" ? "resolved" : inc.status === "dismissed" ? "dismissed" : "still open";
+  const context = `"${clean(inc.title, 80)}" — ${stateWords}. Affects ${inc.customers} customers across ${inc.conversations} conversations.`;
   if (!input.authorized) {
     // Model-inferred intent is never enough to mutate: offer a one-word
     // contextual confirmation bound to THIS incident, or the exact phrase.
     // matchDraftConfirmation accepts the YES only against this prompt.
     return {
-      body: `${context}\n\nWant me to draft it? Reply YES — or reply "draft a recovery plan for #${short(inc.id)}" anytime.\n\nDrafts are planning-only and always need human review — nothing is approved or sent from chat.`,
+      body: `${context}\n\nYeah, I can do that. I've got the reports and the evidence is in — though we haven't confirmed why it's happening yet, so I'll focus on investigating that first.\n\nWant me to put together a draft for you to review? Reply YES and I'll draft it for #${short(inc.id)}. Nothing gets approved or sent from here.`,
       link: incidentLink(slug, inc.id),
     };
   }
@@ -146,15 +165,18 @@ export async function handlePlanRequest(input: {
   } catch {
     return { body: `${context}\n\nDrafting hit a wall reaching the records — nothing was created. Try again in a bit, or open the staff console.`, link: incidentLink(slug, inc.id) };
   }
-  const reviewLine = `Review it here (staff sign-in):`;
+  const reviewLine = `You can review it here (staff sign-in):`;
   switch (result.action) {
     case "built":
     case "unchanged": {
       const p = result.plan.payload;
-      const fresh = result.action === "built" ? "Drafted" : "Already drafted";
+      const fresh =
+        result.action === "built"
+          ? "Yeah, I've put together a draft."
+          : "Good news — there's already a draft for this, nothing new to add.";
       return {
         body:
-          `${context}\n\n${fresh} recovery plan v${result.plan.plan_version} (DRAFT — planning only, needs human review, not approved, nothing sent):\n` +
+          `${context}\n\n${fresh} It's just a draft (v${result.plan.plan_version}) — it needs your review before anything happens, and nothing is approved or sent.\n\nHere's what I'd check first:\n` +
           planLines(p).join("\n") +
           `\n\n${reviewLine}`,
         link: incidentLink(slug, inc.id),
@@ -162,23 +184,23 @@ export async function handlePlanRequest(input: {
     }
     case "insufficient":
       return {
-        body: `${context}\n\nI can't draft yet — ${clean(result.reason, 160)}\n\nLink the latest customer report so the evidence brief assembles, then ask me again.`,
+        body: `${context}\n\nI can't draft anything useful yet — ${clean(result.reason, 160)}\n\nOnce the latest customer report is linked up, ask me again and I'll take another look.`,
         link: incidentLink(slug, inc.id),
       };
     case "in_progress":
       return {
-        body: `${context}\n\nA draft is already being prepared — give it a moment, then ask again. Nothing is approved or sent from chat.`,
+        body: `${context}\n\nA draft is already on its way — give it a moment, then ask again. Nothing is approved or sent from here.`,
         link: incidentLink(slug, inc.id),
       };
     case "deferred":
       return {
-        body: `${context}\n\nDrafting hit a wall reaching the records — nothing was created. Try again in a bit, or open the staff console.`,
+        body: `${context}\n\nI couldn't reach the records just now, so nothing was drafted. Try again in a bit, or open the staff console.`,
         link: incidentLink(slug, inc.id),
       };
     case "failed":
     default:
       return {
-        body: `${context}\n\nDrafting failed (${clean(result.action === "failed" ? result.error : "unknown", 160)}). Nothing was stored — the evidence and existing records are untouched. Try again, or open the staff console.`,
+        body: `${context}\n\nI tried, but ${plainFailureCause(result.action === "failed" ? result.error : "unknown")} — nothing was stored and the existing records are untouched. Try again, or open the staff console.`,
         link: incidentLink(slug, inc.id),
       };
   }

@@ -185,6 +185,45 @@ export type LiveOption = { kind: "candidate" | "incident"; id: string; title: st
 const REF_TOKEN_RE = /[0-9a-f]{8}(?:-[0-9a-f]{4}){0,4}/gi;
 
 /**
+ * Deterministic topic matching: significant words from the CURRENT message
+ * scored against live record titles. Returns the matching options (one =
+ * select, several = clarify, none = null so history context still applies).
+ * Generic words (issue, incident, plan, draft, …) never discriminate;
+ * matching is case-insensitive substring on title words. Pure.
+ */
+const TOPIC_STOP = new Set(
+  ("the,a,an,this,that,these,those,it,its,issue,issues,incident,incidents," +
+    "problem,problems,report,reports,customer,customers,my,our,for,about,with," +
+    "what,please,plan,plans,proposal,draft,recovery,action,me,us,you,can,could," +
+    "should,would,like,want,need,there,their,them,they,than,then,also,just," +
+    "more,most,other,another,tell,give,show,put,together")
+    .split(","),
+);
+
+export function matchTopicReference(
+  text: string,
+  live: LiveOption[],
+): { options: LiveOption[] } | null {
+  if (live.length === 0) return null;
+  const tokens = new Set(
+    text
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((t) => t.length >= 4 && !TOPIC_STOP.has(t)),
+  );
+  if (tokens.size === 0) return null;
+  const scored = live.map((o) => {
+    const title = o.title.toLowerCase();
+    let score = 0;
+    for (const t of tokens) if (title.includes(t)) score++;
+    return { o, score };
+  });
+  const best = Math.max(...scored.map((s) => s.score));
+  if (best < 1) return null;
+  return { options: scored.filter((s) => s.score === best).map((s) => s.o) };
+}
+
+/**
  * Track the selected incident/candidate from previous VALIDATED conversation
  * context: scan assistant (bot-authored) turns newest-first for reference
  * tokens that match actual workspace-authorized records. Anything that does
@@ -474,8 +513,7 @@ export async function gatherContext(input: {
 
   const liveIncs: LiveOption[] = incidents.map((i) => ({ kind: "incident", id: i.id, title: i.title }));
   const liveCands: LiveOption[] = candidates.map((c) => ({ kind: "candidate", id: c.id, title: c.title }));
-  const live: LiveOption[] = [...liveIncs, ...liveCands];
-  const empty =
+  const live: LiveOption[] = [...liveIncs, ...liveCands];  const empty =
     (!stats || (stats.openIssues === 0 && stats.conversations === 0 && stats.customers === 0)) &&
     incidents.length === 0 &&
     candidates.length === 0;
@@ -498,6 +536,18 @@ export async function gatherContext(input: {
         selected = target;
         break;
       }
+    }
+  }
+  if (!selected && !ambiguous && live.length > 0) {
+    // Explicit TOPIC words in the current message outrank older history:
+    // "the tracking issue" must resolve to the tracking record even when
+    // an earlier turn named something else. Deterministic title matching
+    // only — never model inference, never invented references. A tie asks.
+    const topic = matchTopicReference(text, live);
+    if (topic && topic.options.length === 1) {
+      selected = topic.options[0];
+    } else if (topic && topic.options.length > 1) {
+      ambiguous = topic.options.slice(0, 5);
     }
   }
   if (!selected && !ambiguous && live.length > 0) {
@@ -551,6 +601,20 @@ export async function gatherContext(input: {
     } else {
       ambiguous = (current ? rest : live).slice(0, 5);
       selected = null;
+    }
+  }
+
+  // Candidate accepted as an incident mid-conversation: follow the record.
+  // History or topic may name the candidate, but the live incident is the
+  // correct target for plans and follow-ups. Pending candidates stay put.
+  if (selected?.kind === "candidate" && !ambiguous) {
+    const accepted = await reads
+      .getCandidate(selected.id, workspaceId)
+      .catch(() => null)
+      .then((c) => c?.acceptedIncidentId ?? null);
+    if (accepted) {
+      const live = incidents.find((i) => i.id === accepted);
+      if (live) selected = { kind: "incident", id: live.id, title: live.title };
     }
   }
 
@@ -627,10 +691,10 @@ async function loadSelectedDetail(
     const c = await reads.getCandidate(option.id, workspaceId).catch(() => null);
     if (!c) return { option, shortRef: ref, detail: "", stale: false };
     const detail = [
-      `Candidate (UNCONFIRMED): ${c.title}.`,
+      `Possible issue (not confirmed yet): ${c.title}.`,
       `${c.conversations} conversations, ${c.customers} customers.`,
-      c.summary ? `Why grouped: ${c.summary.slice(0, 200)}` : "",
-      `Grouping confidence: ${c.confidence} (estimate only).`,
+      c.summary ? `Why these look related: ${c.summary.slice(0, 200)}` : "",
+      `Our grouping is a best guess, not proof.`,
     ]
       .filter(Boolean)
       .join(" ");
@@ -649,8 +713,9 @@ async function loadSelectedDetail(
       : null;
   if (!inc) return { option, shortRef: ref, detail: "", stale: false };
   const briefState: BriefState = !brief ? "missing" : brief.status === "current" ? "current" : (brief.status as BriefState);
+  const stateWords = inc.status === "resolved" ? "resolved" : inc.status === "dismissed" ? "dismissed" : "still open";
   const parts = [
-    `Incident: ${inc.title} [${inc.status}, ${inc.severity}].`,
+    `"${inc.title}" — ${stateWords}, ${inc.severity} severity.`,
     `Affects ${inc.customers} customers across ${inc.conversations} conversations.`,
   ];
   let stale = false;
@@ -671,7 +736,7 @@ async function loadSelectedDetail(
   if (plan && (kind === "next_steps" || kind === "plan_request")) {
     const tops = plan.topSteps.slice(0, 2).map((s) => s.replace(/\s+/g, " ").trim().slice(0, 140)).filter(Boolean);
     parts.push(
-      `Validated draft plan v${plan.version} (${plan.status}, ${plan.riskLevel} risk — DRAFT, needs human review, not approved): ${tops.join(" / ") || `${plan.stepCount} steps`}.`,
+      `There's already a draft recovery plan (v${plan.version}, ${plan.riskLevel} risk — it still needs your review, nothing approved): ${tops.join("; ") || `${plan.stepCount} steps`}.`,
     );
   }
   if (kind === "sofar" || kind === "why_related") {
@@ -723,13 +788,13 @@ export function factsText(ctx: ConverseContext, plan: ConversePlan, slug: string
   }
   if (ctx.candidates.length > 0) {
     lines.push(
-      `PENDING CANDIDATES, ALL UNCONFIRMED (${ctx.candidates.length}): ` +
+      `Possible issues, none confirmed (${ctx.candidates.length}): ` +
         ctx.candidates
           .map((c) => `"${c.title.slice(0, 80)}" [#${short(c.id)}, ${c.conversations} convos, ${c.customers} customers]`)
           .join(" | "),
     );
   } else {
-    lines.push("PENDING CANDIDATES: none.");
+    lines.push("Possible issues: none right now.");
   }
   if (ctx.decisions.length > 0) {
     lines.push(`OUTSTANDING REVIEW WORK: ${ctx.decisions.slice(0, 5).join(" | ")}`);

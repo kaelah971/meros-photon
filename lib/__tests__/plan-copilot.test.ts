@@ -118,9 +118,9 @@ describe("plan copilot (deterministic gate + honest replies)", () => {
       getIncident: async () => incidentRow,
     });
     expect(runs).toBe(1);
-    expect(res.body).toContain("DRAFT");
-    expect(res.body).toContain("needs human review");
-    expect(res.body).toContain("not approved");
+    expect(res.body).toContain("just a draft");
+    expect(res.body).toContain("needs your review");
+    expect(res.body).toContain("nothing is approved or sent");
     expect(res.body).not.toMatch(/approv(ing|ed) this|will send|fixed/i);
     expect(res.body).toContain("Reproduce the 422");
     expect(res.link).toContain(`/app/workspaces/demo-shop/incidents/${INC}`);
@@ -138,7 +138,7 @@ describe("plan copilot (deterministic gate + honest replies)", () => {
       getIncident: async () => incidentRow,
     });
     expect(runs).toBe(0);
-    expect(res.body).toContain("draft a recovery plan for #");
+    expect(res.body).toContain("Reply YES");
   });
 
   it("ambiguous and missing selections clarify without guessing", async () => {
@@ -165,7 +165,7 @@ describe("plan copilot (deterministic gate + honest replies)", () => {
       runPlan: async () => { throw new Error("must not run"); },
       getIncident: async () => incidentRow,
     });
-    expect(cand.body).toContain("unconfirmed");
+    expect(cand.body).toContain("not a confirmed incident yet");
     const foreign = await handlePlanRequest({
       selection: { state: "selected", option: { kind: "incident", id: "99999999-0000-0000-0000-000000000000", title: "???" } },
       workspaceId: WS, slug: "demo-shop", authorized: true,
@@ -184,7 +184,7 @@ describe("plan copilot (deterministic gate + honest replies)", () => {
       runPlan: async () => ({ action: "insufficient", reason: "brief has no grounded observations yet" }),
       getIncident,
     });
-    expect(thin.body).toContain("can't draft yet");
+    expect(thin.body).toContain("can't draft anything useful yet");
     const failed = await handlePlanRequest({
       selection: sel, workspaceId: WS, slug: "demo-shop", authorized: true,
       runPlan: async () => { throw new Error("model down"); },
@@ -196,7 +196,7 @@ describe("plan copilot (deterministic gate + honest replies)", () => {
       runPlan: async () => ({ action: "in_progress" }),
       getIncident,
     });
-    expect(busy.body).toContain("already being prepared");
+    expect(busy.body).toContain("already on its way");
   });
 
   it("duplicate requests reuse the unchanged draft (idempotent)", async () => {
@@ -207,9 +207,9 @@ describe("plan copilot (deterministic gate + honest replies)", () => {
     const a = await handlePlanRequest({ selection: sel, workspaceId: WS, slug: "demo-shop", authorized: true, runPlan: idempotent, getIncident: async () => incidentRow });
     const b = await handlePlanRequest({ selection: sel, workspaceId: WS, slug: "demo-shop", authorized: true, runPlan: idempotent, getIncident: async () => incidentRow });
     expect(calls).toBe(2);
-    expect(a.body).toContain("Already drafted");
-    expect(b.body).toContain("Already drafted");
-    expect(a.body).toContain("not approved, nothing sent");
+    expect(a.body).toContain("already a draft");
+    expect(b.body).toContain("already a draft");
+    expect(a.body).toContain("nothing is approved or sent");
   });
 });
 
@@ -233,8 +233,8 @@ describe("conversational wiring (no model phrasing on plan data)", () => {
     expect(out.kind).toBe("plan_request");
     expect(runs).toBe(1);
     expect(phrase).not.toHaveBeenCalled();
-    expect(out.replyText).toContain("DRAFT");
-    expect(out.replyText).toContain("needs human review");
+    expect(out.replyText).toContain("just a draft");
+    expect(out.replyText).toContain("needs your review");
   });
 
   it("model-inferred plan intent asks for the explicit phrase (no generation)", async () => {
@@ -270,8 +270,8 @@ describe("conversational wiring (no model phrasing on plan data)", () => {
     });
     const out = await runConversational(rt);
     expect(out.kind).toBe("next_steps");
-    expect(capturedFacts).toContain("Validated draft plan v2");
-    expect(capturedFacts).toContain("DRAFT, needs human review");
+    expect(capturedFacts).toContain("already a draft recovery plan (v2");
+    expect(capturedFacts).toContain("needs your review");
   });
 
   it("approval-flavored draft talk stays refused (action_request)", async () => {
@@ -345,7 +345,7 @@ describe("contextual YES confirmation (no exact phrase required)", () => {
     expect(runs).toBe(1);
     expect(classify).not.toHaveBeenCalled();
     expect(phrase).not.toHaveBeenCalled();
-    expect(done.replyText).toContain("DRAFT");
+    expect(done.replyText).toContain("just a draft");
   });
 
   it("YES with no live matching incident stays honest and runs nothing", async () => {
@@ -362,6 +362,7 @@ describe("contextual YES confirmation (no exact phrase required)", () => {
     expect(runs).toBe(0);
     expect(out.replyText).toContain("Which incident should I draft for?");
   });
+});
 
 describe("alert-context follow-up (status after Radar alert)", () => {
   const CAND = "22222222-3333-4444-5555-666666666666";
@@ -390,7 +391,7 @@ describe("alert-context follow-up (status after Radar alert)", () => {
     const out = await runConversational(rt);
     expect(out.kind).toBe("status");
     expect(facts).toContain("SELECTED CANDIDATE");
-    expect(facts).toContain("UNCONFIRMED");
+    expect(facts).toContain("not confirmed yet");
     expect(facts).toContain("RADAR: a recent Radar alert exists");
   });
 
@@ -404,7 +405,7 @@ describe("alert-context follow-up (status after Radar alert)", () => {
     });
     const out = await runConversational(rt);
     expect(out.replyText).toContain("Most recent alert:");
-    expect(out.replyText).toContain("UNCONFIRMED");
+    expect(out.replyText).toContain("not confirmed yet");
   });
 
   it("several live alerts never auto-select on status; stale alerts are ignored", async () => {
@@ -453,7 +454,7 @@ describe("alert-context follow-up (status after Radar alert)", () => {
     const out = await runConversational(rt);
     expect(out.kind).toBe("plan_request");
     expect(runs).toBe(0);
-    expect(out.replyText).toContain("unconfirmed");
+    expect(out.replyText).toContain("not a confirmed incident yet");
   });
 
   it("'what do you think we should do' routes deterministically", async () => {
@@ -463,4 +464,114 @@ describe("alert-context follow-up (status after Radar alert)", () => {
   });
 });
 
+describe("P7 incident selection (topic beats recency)", () => {
+  const VISA = "9d643921-35e1-4fdc-89f5-b98a11d0df0d";
+  const TRACK = "8847f10d-a20c-493f-8af9-5f07afa2f319";
+  const visaRow = {
+    id: VISA, title: "Visa checkout fails with error CKT-422 Payment validation failed",
+    status: "ready_for_action", severity: "medium", customers: 5, conversations: 6,
+    evidence: 9, updatedAt: new Date().toISOString(),
+  };
+  const trackRow = {
+    id: TRACK, title: "Tracking page shows parcel delivered but customer received nothing",
+    status: "investigating", severity: "high", customers: 3, conversations: 3,
+    evidence: 4, updatedAt: new Date().toISOString(),
+  };
+  const readsBoth = makeReads({
+    listActiveIncidents: async () => [visaRow, trackRow],
+    listReviewCandidates: async () => [],
+    getIncident: async (id, ws) => (ws !== WS ? null : id === VISA ? visaRow : id === TRACK ? trackRow : null),
+    getBrief: async () => null,
+    getMatches: async () => ({ current: true, fingerprint: null, rows: [] as never[] }),
+  });
+  // Production history shape: newest assistant turn names Visa (listed),
+  // older turns carry the tracking alert context.
+  const prodHistory: ConverseTurn[] = [
+    { role: "user", text: "what's going on?" },
+    { role: "assistant", text: `Most recent alert: Possible issue (not confirmed yet): Tracking page shows parcel delivered. #${TRACK.slice(0, 8)}` },
+    { role: "user", text: "what do you think we should do?" },
+    { role: "assistant", text: `Open now: "Visa checkout fails with error CKT-422" [ready_for_action, medium] — 5 customers. #${VISA.slice(0, 8)}` },
+  ];
+
+  it("exact prod repro: 'plan for the tracking issue' selects tracking, not Visa", async () => {
+    let runs: string[] = [];
+    const rt = baseRuntime({
+      text: "Can you put together a plan for the tracking issue?",
+      history: prodHistory,
+      reads: readsBoth,
+      classify: async () => ({ kind: "plan_request", refHint: null, topic: null }),
+      phrase: async () => { throw new Error("phrase must not run"); },
+      runPlan: async (id) => { runs.push(id); return builtResult(); },
+    });
+    const confirm = await runConversational(rt);
+    expect(confirm.kind).toBe("plan_request");
+    expect(runs).toHaveLength(0);
+    expect(confirm.replyText).toContain("Tracking page shows parcel delivered");
+    expect(confirm.replyText).not.toContain("Visa checkout");
+    expect(confirm.replyText).toContain(`#${TRACK.slice(0, 8)}`);
+    // "Yes, please." authorizes the TRACKING draft only.
+    const done = await runConversational(baseRuntime({
+      text: "Yes, please.",
+      history: [...prodHistory, { role: "user", text: "Can you put together a plan for the tracking issue?" }, { role: "assistant", text: confirm.replyText }],
+      reads: readsBoth,
+      classify: async () => { throw new Error("model must not authorize"); },
+      phrase: async () => { throw new Error("phrase must not run"); },
+      runPlan: async (id) => { runs.push(id); return builtResult(); },
+    }));
+    expect(runs).toEqual([TRACK]);
+    expect(done.replyText).toContain("just a draft");
+    expect(done.replyText).not.toContain("Visa");
+  });
+
+  it("tied topics ask for clarification instead of guessing", async () => {
+    const rt = baseRuntime({
+      text: "draft a plan for the checkout problem",
+      history: [],
+      reads: makeReads({
+        listActiveIncidents: async () => [visaRow, { ...trackRow, title: "Checkout tracking page shows wrong status" }],
+        listReviewCandidates: async () => [],
+        getIncident: async () => null,
+      }),
+      classify: async (): Promise<import("../photon/converse").ConversePlan> => ({ kind: "plan_request", refHint: null, topic: null }),
+      phrase: async () => "phrased",
+    });
+    const out = await runConversational(rt);
+    expect(out.kind).toBe("plan_request");
+    expect(out.replyText).toContain("which incident should I draft for");
+  });
+
+  it("accepted candidate resolves to its live incident", async () => {
+    const candId = "aaaaaaaa-1111-2222-3333-444444444444";
+    const rt = baseRuntime({
+      text: "sofar",
+      history: [],
+      reads: makeReads({
+        listActiveIncidents: async () => [trackRow],
+        listReviewCandidates: async () => [{ id: candId, title: "Tracking 422", summary: "s", status: "pending", confidence: "high", rationale: "r", acceptedIncidentId: TRACK, conversations: 3, customers: 3, messages: 3, updatedAt: new Date().toISOString() }],
+        getCandidate: async (id, ws) => (id === candId && ws === WS ? { id: candId, title: "Tracking 422", summary: "s", status: "pending", confidence: "high", rationale: "r", acceptedIncidentId: TRACK, conversations: 3, customers: 3, messages: 3, updatedAt: new Date().toISOString() } : null),
+        getIncident: async (id, ws) => (id === TRACK && ws === WS ? trackRow : null),
+        getBrief: async () => null,
+      }),
+      classify: async () => ({ kind: "sofar", refHint: candId, topic: null }),
+      phrase: async (input) => input.facts,
+    });
+    const out = await runConversational(rt);
+    expect(out.replyText).toContain(TRACK.slice(0, 8));
+    expect(out.replyText).toContain("SELECTED INCIDENT");
+  });
+
+  it("human voice: no jargon, no raw statuses, draft meaning kept", async () => {
+    const sel = { state: "selected" as const, option: { kind: "incident" as const, id: TRACK, title: trackRow.title } };
+    const res = await handlePlanRequest({
+      selection: sel, workspaceId: WS, slug: "demo-shop", authorized: true,
+      runPlan: async () => builtResult(),
+      getIncident: async () => ({ ...trackRow, customers: 3, conversations: 3 }),
+    });
+    for (const banned of ["ready_for_action", "UNCONFIRMED", "planning-only artifact", "Reply exactly", "validated draft", "[diagnostic]", "[corrective]", "Candidate ("]) {
+      expect(res.body).not.toContain(banned);
+    }
+    expect(res.body).toContain("needs your review");
+    expect(res.body).toContain("nothing is approved or sent");
+    expect(res.body).toContain("Here's what I'd check first");
+  });
 });

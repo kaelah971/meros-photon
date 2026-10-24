@@ -59,7 +59,7 @@ function builtResult(): GenerateResult {
         ],
         prerequisites: [],
         missingInfo: ["gateway log excerpt"],
-        riskLevel: "low",
+        riskLevel: "low" as const,
         safetyWarnings: [],
         expectedOutcomes: ["A confirmed reproduction path"],
         verificationChecks: ["Staging log shows the code"],
@@ -118,7 +118,7 @@ describe("plan copilot (deterministic gate + honest replies)", () => {
       getIncident: async () => incidentRow,
     });
     expect(runs).toBe(1);
-    expect(res.body).toContain("just a draft");
+    expect(res.body).toContain("put together a draft");
     expect(res.body).toContain("needs your review");
     expect(res.body).toContain("nothing is approved or sent");
     expect(res.body).not.toMatch(/approv(ing|ed) this|will send|fixed/i);
@@ -233,7 +233,7 @@ describe("conversational wiring (no model phrasing on plan data)", () => {
     expect(out.kind).toBe("plan_request");
     expect(runs).toBe(1);
     expect(phrase).not.toHaveBeenCalled();
-    expect(out.replyText).toContain("just a draft");
+    expect(out.replyText).toContain("put together a draft");
     expect(out.replyText).toContain("needs your review");
   });
 
@@ -261,7 +261,7 @@ describe("conversational wiring (no model phrasing on plan data)", () => {
       history,
       reads: makeReads({
         getPlan: async () => ({
-          version: 2, status: "draft", riskLevel: "low", stepCount: 3,
+          version: 2, status: "draft", riskLevel: "low" as const, stepCount: 3,
           topSteps: ["Reproduce the 422 with a test card"], fingerprint: "fp-1",
         }),
       }),
@@ -345,7 +345,7 @@ describe("contextual YES confirmation (no exact phrase required)", () => {
     expect(runs).toBe(1);
     expect(classify).not.toHaveBeenCalled();
     expect(phrase).not.toHaveBeenCalled();
-    expect(done.replyText).toContain("just a draft");
+    expect(done.replyText).toContain("put together a draft");
   });
 
   it("YES with no live matching incident stays honest and runs nothing", async () => {
@@ -519,7 +519,7 @@ describe("P7 incident selection (topic beats recency)", () => {
       runPlan: async (id) => { runs.push(id); return builtResult(); },
     }));
     expect(runs).toEqual([TRACK]);
-    expect(done.replyText).toContain("just a draft");
+    expect(done.replyText).toContain("put together a draft");
     expect(done.replyText).not.toContain("Visa");
   });
 
@@ -648,5 +648,125 @@ describe("P7.1 truncated-history confirmation (real persistence path)", () => {
     const out = await runConversational(rt);
     expect(out.kind).toBe("plan_request");
     expect(runs).toEqual([TRACK]);
+  });
+});
+
+describe("P7.2 truncation-safe plan results (screenshot repro)", () => {
+  const TRACK = "8847f10d-a20c-493f-8af9-5f07afa2f319";
+  const trackRow = {
+    id: TRACK, title: "Tracking page shows parcel delivered but customer received nothing",
+    status: "investigating", severity: "high", customers: 3, conversations: 3,
+    evidence: 4, updatedAt: new Date().toISOString(),
+  };
+  // Synthetic payload mirroring the REAL failed shape: 5 steps, first a
+  // ~150-char single sentence (the production cut happened mid-sentence).
+  // Wording is synthetic; only lengths mirror production (115–189 chars).
+  const steps = [
+    "Confirm whether the three synthetic reports concern the same order, carrier, and delivery address, or are isolated incidents with a shared status display problem.",
+    "Ask the carrier for the GPS delivery scan coordinates tied to each of the three synthetic tracking numbers in the evidence brief.",
+    "Check whether the storefront order status page caches carrier responses aggressively enough to show stale delivered flags to customers.",
+    "Draft a plain-language holding reply for affected customers that promises a re-check without admitting fault or quoting internal ticket codes.",
+    "Record the verified courier handoff timestamps in the incident timeline so later reviewers can see exactly when each parcel changed hands.",
+  ];
+  const payloadFor = (descs: string[]) => ({
+    problemSummary: "Synthetic: parcels show delivered but were not received.",
+    approach: "Verify scope, then check carrier data.",
+    steps: descs.map((description) => ({
+      description, purpose: "p", kind: "diagnostic" as const, evidenceRefs: ["m-1"], matchRefs: [] as string[],
+      prerequisites: [] as string[], expectedResult: "e", risk: "low" as const, humanRequired: false, verification: "v",
+    })),
+    prerequisites: [] as string[], missingInfo: ["synthetic unknown"], riskLevel: "low" as const,
+    safetyWarnings: [] as string[], expectedOutcomes: ["o"], verificationChecks: ["v"],
+    rollbackNotes: "no corrective action proposed", historicalBasis: [],
+  });
+  const builtResultFor = (descs: string[]) => ({
+    action: "built" as const,
+    plan: {
+      id: "plan-9", incident_id: TRACK, workspace_id: WS, plan_version: 1, status: "draft" as const,
+      brief_fingerprint: "fp-x", brief_version: 1, payload: payloadFor(descs),
+      created_by_user_id: null, reviewed_by_user_id: null, reviewed_at: null, review_note: null,
+      created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    },
+  });
+  const sel = { state: "selected" as const, option: { kind: "incident" as const, id: TRACK, title: trackRow.title } };
+  const runBuilt = (descs: string[]) =>
+    handlePlanRequest({
+      selection: sel, workspaceId: WS, slug: "demo-shop", authorized: true,
+      runPlan: async () => builtResultFor(descs),
+      getIncident: async () => ({ ...trackRow }),
+    });
+  const fitted = async (descs: string[]) => {
+    const { fitConverse } = await import("../photon/converse");
+    const res = await runBuilt(descs);
+    return fitConverse(res.body, res.link, false);
+  };
+  const lastSentenceEnd = (s: string) => /[.!?]["”']?$/.test(s.trim());
+  // A clause cut is complete when it ends alphanumerically with no dangling
+  // conjunction, comma, or article — never mid-clause like "or are".
+  const cleanClauseEnd = (s: string) =>
+    /[a-z0-9]$/i.test(s.trim()) && !/(\bor|\band|\bthe|\ba|\ban|\bto|\bof)\s*$/i.test(s.trim());
+
+  it("screenshot repro: long plan fits with complete sentences and intact link", async () => {
+    const out = await fitted(steps);
+    expect(out.length).toBeLessThanOrEqual(500);
+    expect(out).toContain("https://meros-photon.vercel.app/app/workspaces/demo-shop/incidents/" + TRACK);
+    expect(out).not.toMatch(/,\s*or are\s*\n/);
+    expect(out).toContain(steps[0].slice(0, 60));
+    expect(out).not.toContain(steps[1].slice(0, 60));
+    const beforeLink = out.slice(0, out.indexOf("https://")).trim();
+    expect(lastSentenceEnd(beforeLink)).toBe(true);
+  });
+
+  it("oversized first step falls back to a general ack, never a fragment", async () => {
+    const huge =
+      "Review the complete synthetic parcel manifest line by line from the first record to the very last record in strict sequence without pausing for any reason whatsoever today plus every related metadata field";
+    const out = await fitted([huge + " " + huge]);
+    expect(out).toContain("too detailed for chat");
+    expect(out).toContain("https://meros-photon.vercel.app/app/workspaces/demo-shop/incidents/" + TRACK);
+    const beforeLink = out.slice(0, out.indexOf("https://")).trim();
+    expect(lastSentenceEnd(beforeLink) || cleanClauseEnd(beforeLink)).toBe(true);
+  });
+
+  it("unchanged drafts get the same complete treatment, failed stays honest", async () => {
+    let calls = 0;
+    const res = await handlePlanRequest({
+      selection: sel, workspaceId: WS, slug: "demo-shop", authorized: true,
+      runPlan: async () => { calls++; return { action: "unchanged" as const, plan: builtResultFor(steps).plan }; },
+      getIncident: async () => ({ ...trackRow }),
+    });
+    expect(calls).toBe(1);
+    expect(res.body).toContain("already a draft");
+    const { fitConverse } = await import("../photon/converse");
+    const out = fitConverse(res.body, res.link, false);
+    expect(out.length).toBeLessThanOrEqual(500);
+    const beforeLink = out.slice(0, out.indexOf("https://")).trim();
+    console.log("BL:", JSON.stringify(beforeLink.slice(-70)));
+    expect(lastSentenceEnd(beforeLink) || cleanClauseEnd(beforeLink)).toBe(true);
+    const failed = await handlePlanRequest({
+      selection: sel, workspaceId: WS, slug: "demo-shop", authorized: true,
+      runPlan: async () => { throw new Error("model down"); },
+      getIncident: async () => ({ ...trackRow }),
+    });
+    expect(failed.body).toContain("nothing was created");
+    expect(failed.body).not.toContain("model down");
+    const rejected = await handlePlanRequest({
+      selection: sel, workspaceId: WS, slug: "demo-shop", authorized: true,
+      runPlan: async () => ({ action: "failed" as const, error: "judge returned unusable proposal (no_step_cited_authorized_evidence)" }),
+      getIncident: async () => ({ ...trackRow }),
+    });
+    expect(rejected.body).toContain("nothing was stored");
+    expect(rejected.body).not.toContain("no_step_cited");
+  });
+
+  it("completeSentences keeps sentence integrity or declines", async () => {
+    const { completeSentences, clauseCut } = await import("../photon/plan-copilot");
+    expect(completeSentences("Short and complete.", 500)).toBe("Short and complete.");
+    expect(completeSentences("First is fine. Second runs past the budget line here.", 20)).toBe("First is fine.");
+    expect(completeSentences("No terminal punctuation anywhere in this very long run-on fragment at all", 40)).toBeNull();
+    expect(completeSentences("   ", 100)).toBeNull();
+    expect(completeSentences("Tiny. " + "x".repeat(200), 50)).toBeNull();
+    expect(clauseCut("Confirm whether the three reports concern the same order, carrier, and delivery address, or are isolated", 100))
+      .toBe("Confirm whether the three reports concern the same order, carrier, and delivery address");
+    expect(clauseCut("Boundary-free run-on text with nothing to split on at all today plus more words", 40)).toBeNull();
   });
 });

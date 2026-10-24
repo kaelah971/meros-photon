@@ -15,14 +15,16 @@ phone, same cleanup. No production sends, no approvals, no customer messages.
    Expected: explicit phrase drafts at once; inferred phrasing gets a
    confirmation first (`Reply YES` bound to that incident), and a plain
    `Yes` completes it — no memorized command needed. Result: a warm summary
-   ("I've put together a draft… it needs your review before anything
-   happens"), top diagnostic steps, overall risk, open unknowns, and one
-   staff-console review link. Unchanged evidence returns the existing draft
-   (no duplicate).
+   ("Yeah, I've put together a draft"), the first grounded recommendation
+   in one or two complete sentences, a reminder that human review is still
+   needed, and one complete staff-console review link. Unchanged evidence
+   returns the existing draft (no duplicate).
 
 ## Proof to capture
 
-- Phone screenshots of all three turns.
+- Phone screenshots: the draft reply must end in complete sentences with
+  the full review link visible — no cut-off recommendations, no dangling
+  conjunctions, no dropped URLs.
 - Staff-console screenshot of the draft plan matching the version, steps,
   and risk quoted in chat.
 - `incident_recovery_plans` row: fingerprint equals the current brief

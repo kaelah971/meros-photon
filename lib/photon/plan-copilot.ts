@@ -65,19 +65,74 @@ export function matchDraftConfirmation(
   return null;
 }
 
-function planLines(payload: {
-  steps: { kind: string; description: string; risk: string }[];
-  riskLevel: string;
-  missingInfo: string[];
-}): string[] {
-  const lines = payload.steps
-    .slice(0, 3)
-    .map((s, i) => `${i + 1}. ${clean(s.description, 140)}`);
-  lines.push(`Overall risk looks ${payload.riskLevel}.`);
-  if (payload.missingInfo.length > 0) {
-    lines.push(`We still don't know: ${clean(payload.missingInfo[0], 140)}`);
-  }
-  return lines;
+/** iMessage body budget. Mirrors converse CONVERSE_NORMAL_MAX: fitConverse
+ * appends the review link separately, so the body must leave room for it. */
+export const PLAN_BODY_CAP = 500;
+
+/**
+ * Longest complete-sentence prefix within maxLen (minLen floors trivial
+ * fragments like "v2."). Returns null when nothing safe fits — callers
+ * then try a clause cut, then fall back to a general acknowledgement.
+ */
+export function completeSentences(text: string, maxLen: number, minLen = 12): string | null {
+  const cleanText = text.replace(/\s+/g, " ").trim();
+  if (!cleanText) return null;
+  if (cleanText.length <= maxLen) return cleanText;
+  const m = cleanText.slice(0, maxLen).match(/^([\s\S]*[.!?])(?=\s|$)/);
+  const sent = (m ? m[1] : "").trim();
+  return sent.length >= minLen ? sent : null;
+}
+
+const DANGLERS = /\b(the|a|an|and|or|to|of|for|with|in|on|at|that|this|these|those|is|are|was|were|be|been|by|from|as|it|its|their|his|her|our|your)\s*[,;:\u2014\u2013-]*\s*$/i;
+
+/**
+ * Meaning-preserving clause cut for single-sentence steps that exceed the
+ * budget: longest prefix ending at a comma/semicolon/dash/conjunction
+ * boundary, with dangling words stripped. Never returns a fragment ending
+ * mid-clause ("or are"); null when no safe cut exists.
+ */
+export function clauseCut(text: string, maxLen: number, minLen = 40): string | null {
+  const cleanText = text.replace(/\s+/g, " ").trim();
+  if (!cleanText || cleanText.length <= maxLen) return cleanText || null;
+  const slice = cleanText.slice(0, maxLen);
+  const bounds = [",", ";", ":", "\u2014", "\u2013", " - ", " and ", " or ", " but "]
+    .map((b) => slice.lastIndexOf(b))
+    .filter((i) => i > 0);
+  if (bounds.length === 0) return null;
+  let cut = slice.slice(0, Math.max(...bounds)).replace(/[\s,;:\u2014\u2013-]+$/, "");
+  cut = cut.replace(DANGLERS, "").trim();
+  return cut.length >= minLen ? cut : null;
+}
+
+/**
+ * Built/unchanged reply that always fits the iMessage budget with complete
+ * sentences and an intact link: short ack, ONE payload-derived first
+ * recommendation (or a general ack when it cannot fit safely), review
+ * reminder, and the link passed separately (fitConverse appends it).
+ */
+export function planResultBody(input: {
+  context: string;
+  fresh: boolean;
+  firstStep: string | null;
+  link: string;
+}): { body: string; link: string } {
+  const ack = input.fresh
+    ? "Yeah, I've put together a draft."
+    : "Good news — there's already a draft for this, nothing new to add.";
+  const reminder =
+    "We haven't confirmed the cause yet — it still needs your review, and nothing is approved or sent.";
+  const head = `${input.context}\n\n${ack} `;
+  const tail = `\n\n${reminder}`;
+  const linkRoom = input.link.length + 2; // fitConverse joins body + link with "\n\n"
+  const recPrefix = "Here's what I'd check first: ";
+  const recBudget = PLAN_BODY_CAP - linkRoom - (head + tail).length - recPrefix.length;
+  const stepped = input.firstStep?.replace(/\s+/g, " ").trim() ?? "";
+  const rec =
+    completeSentences(stepped, recBudget) ?? clauseCut(stepped, recBudget) ?? null;
+  const recLine = rec
+    ? `${recPrefix}${rec}`
+    : "The write-up is too detailed for chat — open the review link for the full steps.";
+  return { body: `${head}${recLine}${tail}`, link: input.link };
 }
 
 /** Plain-words cause for a failed draft. Categories stay machine-usable
@@ -165,22 +220,18 @@ export async function handlePlanRequest(input: {
   } catch {
     return { body: `${context}\n\nDrafting hit a wall reaching the records — nothing was created. Try again in a bit, or open the staff console.`, link: incidentLink(slug, inc.id) };
   }
-  const reviewLine = `You can review it here (staff sign-in):`;
   switch (result.action) {
     case "built":
     case "unchanged": {
       const p = result.plan.payload;
-      const fresh =
-        result.action === "built"
-          ? "Yeah, I've put together a draft."
-          : "Good news — there's already a draft for this, nothing new to add.";
-      return {
-        body:
-          `${context}\n\n${fresh} It's just a draft (v${result.plan.plan_version}) — it needs your review before anything happens, and nothing is approved or sent.\n\nHere's what I'd check first:\n` +
-          planLines(p).join("\n") +
-          `\n\n${reviewLine}`,
+      const first = p.steps.length > 0 ? p.steps[0].description : null;
+      const composed = planResultBody({
+        context,
+        fresh: result.action === "built",
+        firstStep: first,
         link: incidentLink(slug, inc.id),
-      };
+      });
+      return { body: composed.body, link: composed.link };
     }
     case "insufficient":
       return {

@@ -12,7 +12,24 @@
 3. Radar OFF. Operator prefs: proactive ON, quiet hours OFF for the demo window.
 4. Three controlled test-customer accounts with known cleanup owners. No real identities.
 
-## Sequence (5 minutes, three browser profiles + one phone)
+## Staged execution (scripted, human-gated)
+
+`.fast-build/demo-fixture-setup.mjs` automates fixture work through authorized
+product workflows only (signup → org → workspace → chat). It NEVER sends by
+default (dry-run prints the plan). Stages:
+
+- `--execute --stage=stage` — creates the labeled org, workspace, and 3
+  customer identities. Sends NOTHING, changes NO preferences.
+- **Human gate (manual):** pair the phone, enable Radar opt-in, quiet hours
+  OFF. Verify with `--execute --stage=status` (checks pairing, thread,
+  proactive readiness, quiet-hours policy; refuses to bless an open gate).
+- `--execute --stage=trigger --confirm-trigger=YES` — re-verifies the gate,
+  then sends the 3 controlled reports through real chat. One-shot marker
+  refuses repeat runs without `--allow-retrigger=YES`.
+- `--execute --stage=cleanup` prints the manual revoke/delete checklist.
+
+The exact 5-minute phone sequence below assumes the gate has passed and the
+trigger has fired exactly once.
 
 | Time | Action | Expected transition |
 |---|---|---|

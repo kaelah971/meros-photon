@@ -11,10 +11,13 @@ phone, same cleanup. No production sends, no approvals, no customer messages.
 2. Owner: **"What should we do?"**
    Expected: read-only next steps plus the existing validated draft if one
    exists ("Validated draft plan vN (DRAFT, needs human review)").
-3. Owner: **"Draft a recovery plan for this."**
-   Expected: `DRAFT — planning only, needs human review, not approved`,
-   top diagnostic steps, overall risk, open unknowns, and a staff-console
-   review link. Unchanged evidence returns the existing draft (no duplicate).
+3. Owner: **"Draft a recovery plan for this."** (or "Can you put together a plan for me?")
+   Expected: explicit phrase drafts at once; inferred phrasing gets a
+   confirmation first (`Reply YES` bound to that incident), and a plain
+   `Yes` completes it — no memorized command needed. Result: `DRAFT —
+   planning only, needs human review, not approved`, top diagnostic steps,
+   overall risk, open unknowns, and a staff-console review link.
+   Unchanged evidence returns the existing draft (no duplicate).
 
 ## Proof to capture
 

@@ -20,6 +20,7 @@ import "server-only";
 
 import type { InvestigateReads } from "./investigate";
 import { candidateLink, formatMessageBody, incidentLink, publicLink, truncateClean } from "./investigate";
+import { matchDraftConfirmation } from "./plan-copilot";
 import type { StatsSnapshot } from "./operator";
 
 export const CONVERSE_NORMAL_MAX = 500;
@@ -122,7 +123,7 @@ const RE = {
   sofar:
     /\bwhat do we know\b|\bwhat.*\bso far\b|\b(know|summary|status) (so far|of (this|that|the))\b|\bbring me up to (date|speed)\b|\brecap\b/i,
   nextSteps:
-    /\bwhat should we do\b|\bwhat('s| is) next\b|\bnext steps?\b|\bwhat do you (suggest|recommend)\b|\bhow (should|do) (we|i) (handle|proceed|fix)\b|\bwhat now\b/i,
+    /\bwhat should we do\b|\bwhat('s| is) next\b|\bnext steps?\b|\bwhat do you (suggest|recommend|think)\b|\bhow (should|do) (we|i) (handle|proceed|fix)\b|\bwhat now\b/i,
   planRequest:
     /\b(draft|create|generate|prepare|write|make|build)\b.{0,40}\b(recovery|action|response) (plan|proposal)\b|\b(plan|proposal) (for|of) (the |this |that )?fix\b/i,
   latest:
@@ -257,6 +258,7 @@ Rules:
 - refHint: copy a reference token ONLY if the operator typed an explicit id or #short-ref. Otherwise null. Never invent ids. Follow-ups like "that one" get null (context resolves them).
 - topic: for "action_request" only — a few words on what was asked (e.g. "approve recovery"). Otherwise null.
 - A request to DO something (approve, send, fix, close, change) is ALWAYS "action_request", even if phrased politely. The ONLY exception: an explicit draft/create/generate recovery-plan request is "plan_request" — approval, sending, and execution stay "action_request".
+- A bare yes/ok/no confirmation is ALWAYS "unknown" — confirmations are resolved deterministically against the prior prompt, never by model routing.
 - Output JSON only, no prose. Keep topic under 20 words.`;
 
 /** Production classifier: fast path first, then one bounded Gemini JSON call. Never throws. */
@@ -418,6 +420,7 @@ export async function gatherContext(input: {
   let candidates: ConverseContext["candidates"] = [];
   let decisions: string[] = [];
   let radarCandidateId: string | null = null;
+  let radarSingle = false;
   let radarOptions: LiveOption[] = [];
   if (needsLists) {
     const [incs, cands] = await Promise.all([
@@ -440,7 +443,11 @@ export async function gatherContext(input: {
       const items = await reads.listDecisions(workspaceId);
       decisions = items.slice(0, 5).map((d) => d.label);
     }
-    if (plan.kind === "latest") {
+    // Alert context: the operator's live Radar alert(s) anchor natural
+    // follow-ups ("what's going on?") — same validated source as `show me`.
+    // Facts stay silent when there is no alert; selection below only fires
+    // on a single unambiguous live alert with no explicit/history ref.
+    if (plan.kind === "latest" || plan.kind === "status" || plan.kind === "worry" || plan.kind === "sofar") {
       // Prefer the operator's live Radar alert when one exists — the same
       // validated source as deterministic `show me`. Never claim Radar
       // otherwise (factsText stays silent when there is no alert).
@@ -452,6 +459,7 @@ export async function gatherContext(input: {
       const liveAlerts = alerts.filter((a) => liveIds.has(a.candidateId));
       if (liveAlerts.length >= 1) {
         radarCandidateId = liveAlerts[0].candidateId;
+        radarSingle = liveAlerts.length === 1;
       }
       if (liveAlerts.length > 1) {
         // Several live alerts: do not pick — the clarification path lists them.
@@ -503,6 +511,17 @@ export async function gatherContext(input: {
     ]);
     if (contextKinds.has(plan.kind)) {
       selected = inferSelectedRef(history, liveCands, liveIncs);
+    }
+  }
+
+  // Single unambiguous live alert with no explicit or history reference:
+  // status/worry/sofar follow-ups are about the just-alerted record (the
+  // candidate detail stays clearly labeled UNCONFIRMED). Several live
+  // alerts never auto-select outside latest — those kinds keep listing.
+  if (!selected && !ambiguous && radarCandidateId && radarSingle) {
+    if (plan.kind === "status" || plan.kind === "worry" || plan.kind === "sofar") {
+      const match = candidates.find((c) => c.id === radarCandidateId);
+      if (match) selected = { kind: "candidate", id: match.id, title: match.title };
     }
   }
 
@@ -777,6 +796,11 @@ export function fallbackReply(ctx: ConverseContext, plan: ConversePlan, slug: st
         };
       }
       const paras: string[] = [];
+      // Just-alerted record leads when the turn resolved to one — never
+      // substituted with generic stats. Candidate detail stays UNCONFIRMED.
+      if (ctx.selected?.detail) {
+        paras.push(`Most recent alert: ${ctx.selected.detail} #${ctx.selected.shortRef}`);
+      }
       if (ctx.stats) paras.push(statsLine(ctx.workspaceName, ctx.stats));
       if (ctx.incidents.length > 0) {
         const top = ctx.incidents[0];
@@ -944,11 +968,27 @@ export type ConverseRuntime = {
  * unreachable (caller degrades honestly without sending).
  */
 export async function runConversational(rt: ConverseRuntime): Promise<{ replyText: string; kind: ConverseKind }> {
+  // Deterministic intent wins before any model call. Explicit plan-request
+  // phrases and YES-confirmations bound to our own prior prompt authorize
+  // generation; the model is never consulted for authorization.
   let plan: ConversePlan;
-  try {
-    plan = validateConversePlan(await rt.classify(rt.text, rt.history)) ?? unknownPlan();
-  } catch {
-    plan = unknownPlan();
+  let authorized = false;
+  const fast = fastClassify(rt.text);
+  if (fast?.kind === "plan_request") {
+    plan = fast;
+    authorized = true;
+  } else {
+    const confirmed = matchDraftConfirmation(rt.text, rt.history);
+    if (confirmed) {
+      plan = { kind: "plan_request", refHint: confirmed.shortRef, topic: "confirmed" };
+      authorized = true;
+    } else {
+      try {
+        plan = validateConversePlan(await rt.classify(rt.text, rt.history)) ?? unknownPlan();
+      } catch {
+        plan = unknownPlan();
+      }
+    }
   }
   const ctx = await gatherContext({
     plan,
@@ -976,7 +1016,6 @@ export async function runConversational(rt: ConverseRuntime): Promise<{ replyTex
       : ctx.selected
         ? { state: "selected" as const, option: { kind: ctx.selected.option.kind, id: ctx.selected.option.id, title: ctx.selected.option.title } }
         : { state: "none" as const, live: liveOptions };
-    const authorized = fastClassify(rt.text)?.kind === "plan_request";
     const runPlan =
       rt.runPlan ??
       (async () => ({ action: "deferred", reason: "plan drafting is not wired in this runtime" }) as import("../recovery-plans").GenerateResult);

@@ -40,6 +40,30 @@ export type PlanRunner = (incidentId: string, workspaceId: string) => Promise<Ge
 const short = (id: string) => id.slice(0, 8);
 const clean = (s: string, n: number) => s.replace(/\s+/g, " ").trim().slice(0, n);
 
+/**
+ * Deterministic draft-confirmation matcher. A bare confirmation counts ONLY
+ * when the newest bot-authored turn is OUR draft prompt for a specific
+ * incident ("reply YES … #<short>") — older prompts expire, unrelated
+ * "yes" answers never authorize anything. Returns the bound short ref so
+ * the caller revalidates it against live workspace records. Pure.
+ */
+const CONFIRM_RE = /^\s*(yes|yeah|yep|yup|do it|go ahead|please do|draft it|confirm(?:ed)?|ok(?:ay)?(?: do it| draft it)?|sure(?: do it)?|sounds good|lets do it|let's do it)\s*[!.?]*$/i;
+const CONFIRM_PROMPT_RE = /reply YES[^\n]*#([0-9a-f]{8,})/i;
+
+export function matchDraftConfirmation(
+  text: string,
+  history: { role: string; text: string }[],
+): { shortRef: string } | null {
+  if (!CONFIRM_RE.test(text.trim())) return null;
+  for (let i = history.length - 1; i >= 0; i--) {
+    const h = history[i];
+    if (h.role !== "assistant" || !h.text.trim()) continue;
+    const m = h.text.match(CONFIRM_PROMPT_RE);
+    return m ? { shortRef: m[1].toLowerCase() } : null;
+  }
+  return null;
+}
+
 function planLines(payload: {
   steps: { kind: string; description: string; risk: string }[];
   riskLevel: string;
@@ -108,9 +132,11 @@ export async function handlePlanRequest(input: {
   }
   const context = `"${clean(inc.title, 80)}" [${inc.status}, ${inc.severity}] — ${inc.customers} customers across ${inc.conversations} conversations.`;
   if (!input.authorized) {
-    // Model-inferred intent is never enough to mutate: demand the explicit phrase.
+    // Model-inferred intent is never enough to mutate: offer a one-word
+    // contextual confirmation bound to THIS incident, or the exact phrase.
+    // matchDraftConfirmation accepts the YES only against this prompt.
     return {
-      body: `${context}\n\nTo draft a recovery plan for this, reply exactly:\n\ndraft a recovery plan for #${short(inc.id)}\n\nDrafts are planning-only and always need human review — nothing is approved or sent from chat.`,
+      body: `${context}\n\nWant me to draft it? Reply YES — or reply "draft a recovery plan for #${short(inc.id)}" anytime.\n\nDrafts are planning-only and always need human review — nothing is approved or sent from chat.`,
       link: incidentLink(slug, inc.id),
     };
   }

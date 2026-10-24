@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { handlePlanRequest } from "../photon/plan-copilot";
+import { handlePlanRequest, matchDraftConfirmation } from "../photon/plan-copilot";
 import {
   fastClassify,
   runConversational,
@@ -251,7 +251,7 @@ describe("conversational wiring (no model phrasing on plan data)", () => {
     expect(out.kind).toBe("plan_request");
     expect(runs).toBe(0);
     expect(phrase).not.toHaveBeenCalled();
-    expect(out.replyText).toContain("reply exactly");
+    expect(out.replyText).toContain("Reply YES");
   });
 
   it("'what should we do' surfaces the existing validated draft", async () => {
@@ -290,4 +290,177 @@ describe("conversational wiring (no model phrasing on plan data)", () => {
     // action_request goes through the normal phrase path (read-only refusal
     // content is covered by the existing s15c suites); the copilot never runs.
   });
+});
+
+describe("contextual YES confirmation (no exact phrase required)", () => {
+  const promptFor = (shortRef: string): ConverseTurn => ({
+    role: "assistant",
+    text: `Checkout 422 [open, high].\n\nWant me to draft it? Reply YES — or reply "draft a recovery plan for #${shortRef}" anytime.`,
+  });
+  const SHORT = INC.slice(0, 8);
+
+  it("matchDraftConfirmation binds YES to our newest prompt only", () => {
+    expect(matchDraftConfirmation("yes", [promptFor(SHORT)])).toEqual({ shortRef: SHORT });
+    expect(matchDraftConfirmation("Yes!", [promptFor(SHORT)])).toEqual({ shortRef: SHORT });
+    expect(matchDraftConfirmation("go ahead", [promptFor(SHORT)])).toEqual({ shortRef: SHORT });
+    expect(matchDraftConfirmation("yes", [])).toBeNull();
+    expect(matchDraftConfirmation("no thanks", [promptFor(SHORT)])).toBeNull();
+    expect(matchDraftConfirmation("yes", [{ role: "assistant", text: "All quiet here." }])).toBeNull();
+    // Stale prompt expires once a newer assistant turn exists.
+    expect(matchDraftConfirmation("yes", [promptFor(SHORT), { role: "assistant", text: "Anything else?" }])).toBeNull();
+  });
+
+  it("natural flow: inferred request → YES → draft, model never authorizes", async () => {
+    const classify = vi.fn(async (): Promise<import("../photon/converse").ConversePlan> => ({ kind: "unknown", refHint: null, topic: null }));
+    const phrase = vi.fn(async () => "phrased");
+    let runs = 0;
+    const history: ConverseTurn[] = [
+      { role: "user", text: "what's happening with checkout?" },
+      { role: "assistant", text: `Open now: "Checkout 422" [open, high] — 3 customers. #${SHORT} full ref ${INC}` },
+    ];
+    const ask = baseRuntime({
+      text: "Can you put together a plan for me?",
+      history,
+      phrase,
+      classify: async () => ({ kind: "plan_request", refHint: null, topic: null }),
+      runPlan: async () => { runs++; return builtResult(); },
+    });
+    const confirm = await runConversational(ask);
+    expect(confirm.kind).toBe("plan_request");
+    expect(runs).toBe(0);
+    expect(phrase).not.toHaveBeenCalled();
+    expect(confirm.replyText).toContain("Reply YES");
+    expect(confirm.replyText).toContain(`#${SHORT}`);
+    // Owner replies YES — classify mock would say unknown; confirmation binds deterministically.
+    const history2: ConverseTurn[] = [...history, { role: "user", text: "Can you put together a plan for me?" }, { role: "assistant", text: confirm.replyText }];
+    const yes = baseRuntime({
+      text: "Yes",
+      history: history2,
+      phrase,
+      classify,
+      runPlan: async () => { runs++; return builtResult(); },
+    });
+    const done = await runConversational(yes);
+    expect(done.kind).toBe("plan_request");
+    expect(runs).toBe(1);
+    expect(classify).not.toHaveBeenCalled();
+    expect(phrase).not.toHaveBeenCalled();
+    expect(done.replyText).toContain("DRAFT");
+  });
+
+  it("YES with no live matching incident stays honest and runs nothing", async () => {
+    const history: ConverseTurn[] = [promptFor("deadbeef")];
+    let runs = 0;
+    const rt = baseRuntime({
+      text: "yes",
+      history,
+      classify: async () => { throw new Error("must not be called"); },
+      runPlan: async () => { runs++; return builtResult(); },
+    });
+    const out = await runConversational(rt);
+    expect(out.kind).toBe("plan_request");
+    expect(runs).toBe(0);
+    expect(out.replyText).toContain("Which incident should I draft for?");
+  });
+
+describe("alert-context follow-up (status after Radar alert)", () => {
+  const CAND = "22222222-3333-4444-5555-666666666666";
+  const candRow = {
+    id: CAND, title: "Checkout 422", summary: "same 422", status: "pending",
+    confidence: "high", rationale: "r", acceptedIncidentId: null,
+    conversations: 3, customers: 3, messages: 3, updatedAt: new Date().toISOString(),
+  };
+  const readsWithAlert = (alerts: { candidateId: string }[]) =>
+    makeReads({
+      listActiveIncidents: async () => [],
+      listReviewCandidates: async () => [candRow],
+      getCandidate: async (id, ws) => (id === CAND && ws === WS ? candRow : null),
+      recentRadarAlerts: async () => alerts.map((a) => ({ ...a, createdAt: new Date().toISOString() })),
+    });
+
+  it("'what's going on' focuses the just-alerted candidate, labeled unconfirmed", async () => {
+    let facts = "";
+    const rt = baseRuntime({
+      text: "What's going on?",
+      reads: readsWithAlert([{ candidateId: CAND }]),
+      stats: { openIssues: 0, conversations: 3, customers: 3 } as never,
+      classify: async (): Promise<import("../photon/converse").ConversePlan> => ({ kind: "status", refHint: null, topic: null }),
+      phrase: async (input) => { facts = input.facts; return "phrased"; },
+    });
+    const out = await runConversational(rt);
+    expect(out.kind).toBe("status");
+    expect(facts).toContain("SELECTED CANDIDATE");
+    expect(facts).toContain("UNCONFIRMED");
+    expect(facts).toContain("RADAR: a recent Radar alert exists");
+  });
+
+  it("fallback reply leads with the alerted record, never generic stats", async () => {
+    const rt = baseRuntime({
+      text: "What's going on?",
+      reads: readsWithAlert([{ candidateId: CAND }]),
+      stats: { openIssues: 0, conversations: 3, customers: 3 } as never,
+      classify: async (): Promise<import("../photon/converse").ConversePlan> => ({ kind: "status", refHint: null, topic: null }),
+      phrase: async () => { throw new Error("phrase down"); },
+    });
+    const out = await runConversational(rt);
+    expect(out.replyText).toContain("Most recent alert:");
+    expect(out.replyText).toContain("UNCONFIRMED");
+  });
+
+  it("several live alerts never auto-select on status; stale alerts are ignored", async () => {
+    const CAND2 = "33333333-4444-5555-6666-777777777777";
+    const candRow2 = { ...candRow, id: CAND2, title: "Login loop" };
+    const twoLive = makeReads({
+      listActiveIncidents: async () => [],
+      listReviewCandidates: async () => [candRow, candRow2],
+      getCandidate: async () => null,
+      recentRadarAlerts: async () => [
+        { candidateId: CAND, createdAt: new Date().toISOString() },
+        { candidateId: CAND2, createdAt: new Date().toISOString() },
+      ],
+    });
+    let facts = "";
+    const multi = baseRuntime({
+      text: "What's going on?",
+      reads: twoLive,
+      stats: { openIssues: 0, conversations: 3, customers: 3 } as never,
+      classify: async (): Promise<import("../photon/converse").ConversePlan> => ({ kind: "status", refHint: null, topic: null }),
+      phrase: async (input) => { facts = input.facts; return "phrased"; },
+    });
+    await runConversational(multi);
+    expect(facts).not.toContain("SELECTED CANDIDATE");
+    let facts2 = "";
+    const stale = baseRuntime({
+      text: "What's going on?",
+      reads: readsWithAlert([{ candidateId: "99999999-0000-0000-0000-000000000000" }]),
+      stats: { openIssues: 0, conversations: 3, customers: 3 } as never,
+      classify: async (): Promise<import("../photon/converse").ConversePlan> => ({ kind: "status", refHint: null, topic: null }),
+      phrase: async (input) => { facts2 = input.facts; return "phrased"; },
+    });
+    await runConversational(stale);
+    expect(facts2).not.toContain("SELECTED CANDIDATE");
+    expect(facts2).toContain("RADAR: no recent Radar alert in context");
+  });
+
+  it("explicit draft request on a pending candidate asks for review first", async () => {
+    let runs = 0;
+    const rt = baseRuntime({
+      text: `draft a recovery plan for #${CAND.slice(0, 8)}`,
+      reads: readsWithAlert([{ candidateId: CAND }]),
+      classify: async (): Promise<import("../photon/converse").ConversePlan> => ({ kind: "status", refHint: null, topic: null }),
+      runPlan: async () => { runs++; return builtResult(); },
+    });
+    const out = await runConversational(rt);
+    expect(out.kind).toBe("plan_request");
+    expect(runs).toBe(0);
+    expect(out.replyText).toContain("unconfirmed");
+  });
+
+  it("'what do you think we should do' routes deterministically", async () => {
+    const { fastClassify } = await import("../photon/converse");
+    expect(fastClassify("What do you think we should do?")?.kind).toBe("next_steps");
+    expect(fastClassify("What's going on?")?.kind).toBe("status");
+  });
+});
+
 });

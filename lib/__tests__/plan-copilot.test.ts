@@ -711,7 +711,8 @@ describe("P7.2 truncation-safe plan results (screenshot repro)", () => {
     expect(out.length).toBeLessThanOrEqual(500);
     expect(out).toContain("https://meros-photon.vercel.app/app/workspaces/demo-shop/incidents/" + TRACK);
     expect(out).not.toMatch(/,\s*or are\s*\n/);
-    expect(out).toContain(steps[0].slice(0, 60));
+    // The full first recommendation fits as one complete sentence.
+    expect(out).toContain(steps[0]);
     expect(out).not.toContain(steps[1].slice(0, 60));
     const beforeLink = out.slice(0, out.indexOf("https://")).trim();
     expect(lastSentenceEnd(beforeLink)).toBe(true);
@@ -765,8 +766,8 @@ describe("P7.2 truncation-safe plan results (screenshot repro)", () => {
     expect(completeSentences("No terminal punctuation anywhere in this very long run-on fragment at all", 40)).toBeNull();
     expect(completeSentences("   ", 100)).toBeNull();
     expect(completeSentences("Tiny. " + "x".repeat(200), 50)).toBeNull();
-    expect(clauseCut("Confirm whether the three reports concern the same order, carrier, and delivery address, or are isolated", 100))
-      .toBe("Confirm whether the three reports concern the same order, carrier, and delivery address");
+    expect(clauseCut("Confirm whether the three reports concern the same order, carrier, and delivery address, or are isolated", 100)).toBeNull();
+    expect(clauseCut("Check the carrier logs; confirm the scan timestamps match the customer reports.", 30)).toBe("Check the carrier logs");
     expect(clauseCut("Boundary-free run-on text with nothing to split on at all today plus more words", 40)).toBeNull();
   });
 });

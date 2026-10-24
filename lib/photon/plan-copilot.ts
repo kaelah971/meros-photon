@@ -87,19 +87,18 @@ const DANGLERS = /\b(the|a|an|and|or|to|of|for|with|in|on|at|that|this|these|tho
 
 /**
  * Meaning-preserving clause cut for single-sentence steps that exceed the
- * budget: longest prefix ending at a comma/semicolon/dash/conjunction
- * boundary, with dangling words stripped. Never returns a fragment ending
- * mid-clause ("or are"); null when no safe cut exists.
+ * budget: longest prefix ending at a STRONG break (semicolon, colon,
+ * em/en dash). Commas and bare conjunctions are never split: cutting there
+ * silently drops list members. Null when no safe cut exists.
  */
-export function clauseCut(text: string, maxLen: number, minLen = 40): string | null {
+export function clauseCut(text: string, maxLen: number, minLen = 12): string | null {
   const cleanText = text.replace(/\s+/g, " ").trim();
   if (!cleanText || cleanText.length <= maxLen) return cleanText || null;
   const slice = cleanText.slice(0, maxLen);
-  const bounds = [",", ";", ":", "\u2014", "\u2013", " - ", " and ", " or ", " but "]
-    .map((b) => slice.lastIndexOf(b))
-    .filter((i) => i > 0);
-  if (bounds.length === 0) return null;
-  let cut = slice.slice(0, Math.max(...bounds)).replace(/[\s,;:\u2014\u2013-]+$/, "");
+  const bounds = [";", ":", "\u2014", "\u2013"].map((b) => slice.lastIndexOf(b));
+  const at = Math.max(...bounds);
+  if (at < 0) return null;
+  let cut = slice.slice(0, at).replace(/[\s;:\u2014\u2013-]+$/, "");
   cut = cut.replace(DANGLERS, "").trim();
   return cut.length >= minLen ? cut : null;
 }
@@ -120,7 +119,7 @@ export function planResultBody(input: {
     ? "Yeah, I've put together a draft."
     : "Good news — there's already a draft for this, nothing new to add.";
   const reminder =
-    "We haven't confirmed the cause yet — it still needs your review, and nothing is approved or sent.";
+    "Not confirmed yet — it needs your review; nothing is approved or sent.";
   const head = `${input.context}\n\n${ack} `;
   const tail = `\n\n${reminder}`;
   const linkRoom = input.link.length + 2; // fitConverse joins body + link with "\n\n"
@@ -225,8 +224,11 @@ export async function handlePlanRequest(input: {
     case "unchanged": {
       const p = result.plan.payload;
       const first = p.steps.length > 0 ? p.steps[0].description : null;
+      // Lean header: the confirmation turn already carried counts; the
+      // draft message spends its budget on one complete recommendation.
+      const shortCtx = `"${clean(inc.title, 80)}" — ${stateWords}.`;
       const composed = planResultBody({
-        context,
+        context: shortCtx,
         fresh: result.action === "built",
         firstStep: first,
         link: incidentLink(slug, inc.id),

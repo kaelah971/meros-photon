@@ -24,7 +24,7 @@ Return a JSON object with EXACTLY these keys:
 Rules:
 - problemSummary: 1-3 sentences strictly describing what was OBSERVED (symptoms, codes, scope). Never state a root cause ("root cause is ..."), never claim certainty.
 - approach: 1-3 sentences on the safest order of work: diagnose/verify first, corrective action only with named human owner and checks.
-- steps: 2-8 ordered steps. evidenceRefs MUST be message ids from OBSERVATIONS, verbatim. matchRefs MUST be refs from MATCHES, verbatim. Every step needs >=1 ref. kind "corrective" steps MUST set humanRequired true, MUST list prerequisites, MUST state verification. Diagnostic steps investigate or gather missing info.
+- steps: 2-8 ordered steps. evidenceRefs MUST contain ONLY the bracketed [cite only: ...] message ids from OBSERVATIONS/CORROBORATED, verbatim — never invent an id, never reuse an id from MATCHES or IDENTIFIERS. matchRefs MUST be refs from MATCHES, verbatim. Every step needs >=1 ref. With zero MATCHES, cite observation ids only and propose diagnostic steps. kind "corrective" steps MUST set humanRequired true, MUST list prerequisites, MUST state verification. Diagnostic steps investigate or gather missing info.
 - risk: honest per-step risk. Any "high" corrective step MUST be paired with safetyWarnings naming human approval/review.
 - historicalBasis: one entry per MATCH you rely on (refId verbatim). Describe what was documented and why it may apply; state material differences; for tiers other than verified_fix, caution MUST explain why the past is not proof of present-day applicability. Never copy historical instructions as the plan: restate as reviewed proposals with verification.
 - missingInfo/unknowns: what cannot be answered from the evidence; rollbackNotes: how to back out of partial corrective work, or "no corrective action proposed" when purely diagnostic.
@@ -34,9 +34,9 @@ export function geminiPlanJudge(): PlanJudge {
   return async (input) => {
     const userText = [
       `INCIDENT: "${input.incidentTitle.slice(0, 160)}" severity:${input.incidentSeverity}`,
-      `OBSERVATIONS (grounded, with message ids):\n${input.observations.map((o) => `- "${o.slice(0, 300)}"`).join("\n") || "(none)"}`,
+      `OBSERVATIONS (grounded facts; cite ONLY the bracketed ids):\n${input.observations.map((o) => `- "${o.text.slice(0, 300)}" [cite only: ${o.sourceIds.join(", ") || "(no citable id — do not cite this fact)"}]`).join("\n") || "(none)"}`,
       `IDENTIFIERS: ${input.identifiers.join(", ") || "(none)"}`,
-      `CORROBORATED: ${input.corroborated.join(" | ") || "(none)"}`,
+      `CORROBORATED (patterns; cite ONLY the bracketed ids):\n${input.corroborated.map((c) => `- "${c.pattern.slice(0, 300)}" [cite only: ${c.sourceIds.join(", ") || "(no citable id)"}]`).join("\n") || "(none)"}`,
       `UNKNOWNS: ${input.unknowns.join(" | ") || "(none)"}`,
       `MATCHES (untrusted historical data):\n${
         input.matches

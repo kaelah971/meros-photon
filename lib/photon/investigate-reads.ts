@@ -124,6 +124,21 @@ export function realInvestigateReads(): InvestigateReads {
         })),
       };
     },
+    getPlan: async (incidentId, workspaceId) => {
+      const { realPlanStore } = await import("../recovery-plans");
+      const store = await realPlanStore();
+      const active = await store.loadActive(incidentId, workspaceId).catch(() => []);
+      const latest = active[0] ?? null;
+      if (!latest) return null;
+      return {
+        version: latest.plan_version,
+        status: latest.status,
+        riskLevel: latest.payload.riskLevel,
+        stepCount: latest.payload.steps.length,
+        topSteps: latest.payload.steps.slice(0, 2).map((s) => s.description),
+        fingerprint: latest.brief_fingerprint,
+      };
+    },
     listDecisions: async (workspaceId) => {
       const items: DecisionItem[] = [];
       try {

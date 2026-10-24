@@ -66,3 +66,21 @@ export function isGeminiConfigured(): boolean {
     process.env.GEMINI_API_KEY?.trim() || process.env.GOOGLE_API_KEY?.trim(),
   );
 }
+
+export function isDeepseekConfigured(): boolean {
+  return Boolean(process.env.DEEPSEEK_API_KEY?.trim());
+}
+
+export type AiProviderId = "deepseek" | "gemini";
+
+/**
+ * Active AI provider. Explicit AI_PROVIDER wins ("deepseek" | "gemini");
+ * otherwise auto: DeepSeek when its key is present, else Gemini.
+ * Explicit "deepseek" without a key stays deepseek so callers throw
+ * honestly instead of silently falling back to Gemini.
+ */
+export function getActiveProvider(): AiProviderId {
+  const explicit = process.env.AI_PROVIDER?.trim().toLowerCase();
+  if (explicit === "deepseek" || explicit === "gemini") return explicit;
+  return isDeepseekConfigured() ? "deepseek" : "gemini";
+}

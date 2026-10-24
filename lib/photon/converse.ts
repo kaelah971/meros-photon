@@ -39,6 +39,7 @@ export type ConverseKind =
   | "sofar"
   | "seen_before"
   | "next_steps"
+  | "plan_request"
   | "explain"
   | "other"
   | "action_request"
@@ -54,6 +55,7 @@ export const CONVERSE_KINDS: readonly ConverseKind[] = [
   "sofar",
   "seen_before",
   "next_steps",
+  "plan_request",
   "explain",
   "other",
   "action_request",
@@ -121,6 +123,8 @@ const RE = {
     /\bwhat do we know\b|\bwhat.*\bso far\b|\b(know|summary|status) (so far|of (this|that|the))\b|\bbring me up to (date|speed)\b|\brecap\b/i,
   nextSteps:
     /\bwhat should we do\b|\bwhat('s| is) next\b|\bnext steps?\b|\bwhat do you (suggest|recommend)\b|\bhow (should|do) (we|i) (handle|proceed|fix)\b|\bwhat now\b/i,
+  planRequest:
+    /\b(draft|create|generate|prepare|write|make|build)\b.{0,40}\b(recovery|action|response) (plan|proposal)\b|\b(plan|proposal) (for|of) (the |this |that )?fix\b/i,
   latest:
     /\blatest\b|\bmost recent\b|\bnewest\b/i,
   worry:
@@ -153,6 +157,7 @@ function hasRefToken(text: string): boolean {
 export function fastClassify(text: string): ConversePlan | null {
   const t = text.trim();
   if (!t) return { kind: "greeting", refHint: null, topic: null };
+  if (RE.planRequest.test(t)) return { kind: "plan_request", refHint: null, topic: null };
   if (RE.action.test(t)) return { kind: "action_request", refHint: null, topic: t.slice(0, 120) };
   if (RE.whyRelated.test(t)) return { kind: "why_related", refHint: null, topic: null };
   if (RE.seenBefore.test(t)) return { kind: "seen_before", refHint: null, topic: null };
@@ -242,6 +247,7 @@ kind must be exactly one of:
 - "sofar" — what do we know, recap, tell me more, what happened, per-customer detail
 - "seen_before" — have we seen this before, is this new, history
 - "next_steps" — what should we do, what now, recommendations
+- "plan_request" — an EXPLICIT request to draft/create/generate a recovery or action plan (never approve, send, execute, or close)
 - "explain" — explain that, what do you mean, why (bare), huh
 - "other" — what about the other incident / the second one
 - "action_request" — approve, publish or send customer messages, execute fixes, change preferences, accept/dismiss/close anything, change pairing
@@ -250,7 +256,7 @@ kind must be exactly one of:
 Rules:
 - refHint: copy a reference token ONLY if the operator typed an explicit id or #short-ref. Otherwise null. Never invent ids. Follow-ups like "that one" get null (context resolves them).
 - topic: for "action_request" only — a few words on what was asked (e.g. "approve recovery"). Otherwise null.
-- A request to DO something (approve, send, fix, close, change) is ALWAYS "action_request", even if phrased politely.
+- A request to DO something (approve, send, fix, close, change) is ALWAYS "action_request", even if phrased politely. The ONLY exception: an explicit draft/create/generate recovery-plan request is "plan_request" — approval, sending, and execution stay "action_request".
 - Output JSON only, no prose. Keep topic under 20 words.`;
 
 /** Production classifier: fast path first, then one bounded Gemini JSON call. Never throws. */
@@ -492,6 +498,7 @@ export async function gatherContext(input: {
       "sofar",
       "seen_before",
       "next_steps",
+      "plan_request",
       "explain",
     ]);
     if (contextKinds.has(plan.kind)) {
@@ -615,6 +622,12 @@ async function loadSelectedDetail(
     kind === "sofar" || kind === "why_related" ? reads.getBrief(option.id, workspaceId).catch(() => null) : Promise.resolve(null),
     kind === "seen_before" ? reads.getMatches(option.id, workspaceId).catch(() => null) : Promise.resolve(null),
   ]);
+  // Existing validated draft, surfaced read-only for next_steps/plan_request.
+  // Never generated here — drafting happens only in the plan copilot path.
+  const plan =
+    kind === "next_steps" || kind === "plan_request"
+      ? await reads.getPlan?.(option.id, workspaceId).catch(() => null)
+      : null;
   if (!inc) return { option, shortRef: ref, detail: "", stale: false };
   const briefState: BriefState = !brief ? "missing" : brief.status === "current" ? "current" : (brief.status as BriefState);
   const parts = [
@@ -636,6 +649,12 @@ async function loadSelectedDetail(
     }
   }
   const nextStep = suggestNextStep(briefState, (brief?.unknowns.length ?? 0) > 0);
+  if (plan && (kind === "next_steps" || kind === "plan_request")) {
+    const tops = plan.topSteps.slice(0, 2).map((s) => s.replace(/\s+/g, " ").trim().slice(0, 140)).filter(Boolean);
+    parts.push(
+      `Validated draft plan v${plan.version} (${plan.status}, ${plan.riskLevel} risk — DRAFT, needs human review, not approved): ${tops.join(" / ") || `${plan.stepCount} steps`}.`,
+    );
+  }
   if (kind === "sofar" || kind === "why_related") {
     parts.push(`Suggested next step (read-only — anything that changes state needs the staff console): ${nextStep}`);
   }
@@ -859,6 +878,18 @@ export function fallbackReply(ctx: ConverseContext, plan: ConversePlan, slug: st
       }
       return { body: `Happy to explain — which part should I unpack?\n\nName the issue or question and I'll put it plainly.`, link: null };
     }
+    case "plan_request": {
+      if (ctx.selected?.option.kind === "incident") {
+        return {
+          body: `I couldn't reach the records for that incident — nothing was drafted. Try again in a bit, or open the staff console.`,
+          link: incidentLink(slug, ctx.selected.option.id),
+        };
+      }
+      return {
+        body: `I couldn't reach the workspace records — nothing was drafted. Try "incidents" for what's live, or open the staff console.`,
+        link: `/app/workspaces/${slug}/incidents`,
+      };
+    }
     case "action_request": {
       const topic = (plan.topic ?? "").toLowerCase();
       const target = ctx.selected;
@@ -901,6 +932,8 @@ export type ConverseRuntime = {
   reads: InvestigateReads;
   classify: (text: string, history: ConverseTurn[]) => Promise<ConversePlan>;
   phrase: (input: PhraseInput) => Promise<string>;
+  /** Draft-plan runner. Injected so tests use fakes; production uses the validated P2 path. */
+  runPlan?: (incidentId: string, workspaceId: string) => Promise<import("../recovery-plans").GenerateResult>;
 };
 
 /**
@@ -930,6 +963,33 @@ export async function runConversational(rt: ConverseRuntime): Promise<{ replyTex
   });
   const facts = factsText(ctx, plan, rt.slug);
   const detailed = capFor(plan.kind) === CONVERSE_DETAILED_MAX;
+  if (plan.kind === "plan_request") {
+    // Deterministic copilot path: no phrasing model touches plan data.
+    // Generation runs ONLY on the deterministic explicit-request gate.
+    const { handlePlanRequest } = await import("./plan-copilot");
+    const liveOptions = [
+      ...ctx.incidents.map((i) => ({ kind: "incident" as const, id: i.id, title: i.title })),
+      ...ctx.candidates.map((c) => ({ kind: "candidate" as const, id: c.id, title: c.title })),
+    ].slice(0, 5);
+    const selection = ctx.ambiguous?.length
+      ? { state: "ambiguous" as const, options: ctx.ambiguous }
+      : ctx.selected
+        ? { state: "selected" as const, option: { kind: ctx.selected.option.kind, id: ctx.selected.option.id, title: ctx.selected.option.title } }
+        : { state: "none" as const, live: liveOptions };
+    const authorized = fastClassify(rt.text)?.kind === "plan_request";
+    const runPlan =
+      rt.runPlan ??
+      (async () => ({ action: "deferred", reason: "plan drafting is not wired in this runtime" }) as import("../recovery-plans").GenerateResult);
+    const res = await handlePlanRequest({
+      selection,
+      workspaceId: rt.workspaceId,
+      slug: rt.slug,
+      authorized,
+      runPlan,
+      getIncident: (id, ws) => rt.reads.getIncident(id, ws),
+    });
+    return { replyText: fitConverse(res.body, res.link, detailed), kind: plan.kind };
+  }
   try {
     const out = await rt.phrase({ text: rt.text, history: rt.history, facts, kind: plan.kind, detailed });
     const link = linkFor(plan, ctx, rt.slug);
@@ -952,6 +1012,14 @@ function linkFor(plan: ConversePlan, ctx: ConverseContext, slug: string): string
     return `/app/workspaces/${slug}/incidents`;
   }
   if (plan.kind === "attention" || plan.kind === "next_steps") return `/app/workspaces/${slug}/incidents`;
+  if (plan.kind === "plan_request") {
+    if (ctx.selected) {
+      return ctx.selected.option.kind === "incident"
+        ? `/app/workspaces/${slug}/incidents/${ctx.selected.option.id}`
+        : `/app/workspaces/${slug}/incidents/detected/${ctx.selected.option.id}`;
+    }
+    return `/app/workspaces/${slug}/incidents`;
+  }
   if (ctx.selected) {
     return ctx.selected.option.kind === "incident"
       ? `/app/workspaces/${slug}/incidents/${ctx.selected.option.id}`

@@ -1,13 +1,15 @@
 import "server-only";
 import { GoogleGenAI } from "@google/genai";
-import { isGeminiConfigured } from "./env";
+import { getActiveProvider, isGeminiConfigured } from "./env";
 import { isRetryable, settleWithTimeout, withRetry, type Settled } from "./retry";
 import { buildAttachmentParts, type AttachmentPayload } from "./attachments";
 
 export { withRetry as withGeminiRetry };
 
-// Gemini remains the primary (and only) LLM provider. Model IDs are
-// configurable via env; defaults are live-verified IDs — never guessed.
+// Provider router entrypoint (import path preserved for all callers).
+// Active provider comes from lib/env getActiveProvider(): DeepSeek when
+// selected/configured, otherwise Gemini. Model IDs are configurable via
+// env; defaults are live-verified IDs — never guessed.
 export const DEFAULT_PRIMARY_MODEL = "gemini-3.5-flash-lite";
 export const DEFAULT_FALLBACK_MODEL = "gemini-3.7-flash";
 /** Deprecated alias; prefer getPrimaryModel(). */
@@ -135,6 +137,12 @@ export async function generateSupportAnswer(input: {
   /** Optional caller ceiling: aborting it cancels the whole model chain. */
   signal?: AbortSignal;
 }): Promise<string> {
+  // Provider router: DeepSeek is primary when selected. Dynamic import
+  // keeps the Gemini SDK out of DeepSeek-mode execution entirely.
+  if (getActiveProvider() === "deepseek") {
+    const m = await import("./deepseek");
+    return m.generateSupportAnswer(input);
+  }
   const ai = getClient();
   const currentParts: { text?: string; inlineData?: { mimeType: string; data: string } }[] = [
     { text: input.message },
@@ -193,6 +201,10 @@ export async function generateJson(input: {
   /** Optional caller ceiling: aborting it cancels the whole model chain. */
   signal?: AbortSignal;
 }): Promise<unknown> {
+  if (getActiveProvider() === "deepseek") {
+    const m = await import("./deepseek");
+    return m.generateJson(input);
+  }
   const ai = getClient();
   const phaseCtrl = new AbortController();
   const onCallerAbort = () => phaseCtrl.abort();

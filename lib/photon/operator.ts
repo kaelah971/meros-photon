@@ -668,6 +668,10 @@ async function handleConversational(
       reads,
       classify: converse.classify,
       phrase: converse.phrase,
+      runPlan: async (incidentId, workspaceId) => {
+        const { realPlanRunner } = await import("./plan-copilot");
+        return realPlanRunner(incidentId, workspaceId, binding.operatorUserId);
+      },
     });
     await replyOnce(deps, linkCtx, replyText, "replied");
     return { action: "converse", replyText };

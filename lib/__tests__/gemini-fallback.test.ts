@@ -12,6 +12,10 @@ const SAVED_ENV = { ...process.env };
 
 beforeEach(() => {
   process.env = { ...SAVED_ENV, GEMINI_API_KEY: "test-key", GEMINI_MODEL: "primary-model", GEMINI_FALLBACK_MODEL: "fallback-model" };
+  // Pin the provider under test: the repo default may be DeepSeek (via
+  // .env.local), but this file verifies Gemini failover with a mocked SDK.
+  process.env.AI_PROVIDER = "gemini";
+  delete process.env.DEEPSEEK_API_KEY;
   genMock.mockReset();
   vi.resetModules();
 });

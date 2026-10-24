@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getMemwalServerUrl, isMainnetRelayer, isNeonConfigured, isWalrusConfigured } from "@/lib/env";
 import { checkMemwalHealth } from "@/lib/walrus";
 import { geminiStatus } from "@/lib/gemini";
+import { aiStatus } from "@/lib/ai-provider";
 import { isPhotonConfigured } from "@/lib/photon/config";
 import { dbAvailable } from "@/lib/db";
 
@@ -44,6 +45,7 @@ export async function GET() {
     app: "meros",
     neon: { configured: isNeonConfigured(), reachable: databaseReachable },
     gemini: geminiStatus(),
+    ai: aiStatus(),
     walrus: {
       configured: isWalrusConfigured(),
       serverUrl,

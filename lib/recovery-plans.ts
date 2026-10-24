@@ -260,6 +260,45 @@ function validateHistoricalBasis(
 }
 
 /**
+ * Safe failure category for unusable judge output. Returns only fixed
+ * category strings — never raw model output, customer messages, evidence
+ * text, or IDs — so validation failures stay diagnosable in logs and UI
+ * without leaking private content.
+ */
+export function diagnoseRecoveryPlan(
+  raw: unknown,
+  evidenceIds: ReadonlySet<string>,
+  matchIds: ReadonlySet<string>,
+  tiers: ReadonlyMap<string, string>,
+): string {
+  if (!raw || typeof raw !== "object") return "empty_or_malformed_output";
+  const o = raw as Record<string, unknown>;
+  const problemSummary = str(o.problemSummary);
+  const approach = str(o.approach);
+  if (!problemSummary || !approach) return "missing_summary_or_approach";
+  if (hasBannedCertainty(problemSummary) || hasBannedCertainty(approach)) return "unsupported_certainty_or_executable_language";
+  if (looksExecutable(problemSummary) || looksExecutable(approach)) return "unsupported_certainty_or_executable_language";
+  const steps: unknown[] = Array.isArray(o.steps) ? o.steps.slice(0, MAX_STEPS) : [];
+  const validSteps = steps.filter((s) => validateStep(s, evidenceIds, matchIds) !== null);
+  if (validSteps.length === 0) {
+    const citesKnown = steps.some((s) => {
+      if (!s || typeof s !== "object") return false;
+      const r = s as Record<string, unknown>;
+      const all = [...(Array.isArray(r.evidenceRefs) ? r.evidenceRefs : []), ...(Array.isArray(r.matchRefs) ? r.matchRefs : [])];
+      return all.some((x) => typeof x === "string" && (evidenceIds.has(x) || matchIds.has(x)));
+    });
+    return citesKnown ? "steps_rejected_safety_or_ownership" : "no_step_cited_authorized_evidence";
+  }
+  if (!validRisk(o.riskLevel)) return "missing_or_invalid_risk_level";
+  const safetyWarnings = strList(o.safetyWarnings);
+  const hasHighRiskCorrective = (validSteps as PlanStep[]).some((s) => s.kind === "corrective" && s.risk === "high");
+  if (hasHighRiskCorrective && !/(human|approval|manual|review)/.test(safetyWarnings.join(" ").toLowerCase())) {
+    return "high_risk_without_approval_warning";
+  }
+  return "invalid_proposal";
+}
+
+/**
  * Strict validation of model output. Returns a storable payload or null
  * (invalid/unsafe → retain existing data, show failure). Never repairs by
  * invention: ungrounded or unsafe entries are dropped, and empty results
@@ -544,9 +583,16 @@ export async function realPlanStore(): Promise<PlanStore> {
 export type PlanJudge = (input: {
   incidentTitle: string;
   incidentSeverity: string;
-  observations: string[];
+  /**
+   * Grounded observations WITH their authorized source message IDs.
+   * The model must cite ONLY these IDs in evidenceRefs — never invent
+   * references. Bare strings caused the live "unusable proposal" failure:
+   * the validator strips unknown IDs, leaving zero citable evidence.
+   */
+  observations: { text: string; sourceIds: string[] }[];
   identifiers: string[];
-  corroborated: string[];
+  /** Corroborated patterns with the message IDs that support them. */
+  corroborated: { pattern: string; sourceIds: string[] }[];
   unknowns: string[];
   matches: {
     refId: string;
@@ -655,9 +701,13 @@ export async function generatePlanIfNeeded(
       raw = await deps.judge({
         incidentTitle: incident.title,
         incidentSeverity: incident.severity,
-        observations: (b.findings.facts ?? []).map((f) => f.observation).slice(0, 10),
+        observations: (b.findings.facts ?? [])
+          .map((f) => ({ text: f.observation, sourceIds: [...(f.sources ?? [])] }))
+          .slice(0, 10),
         identifiers: [...new Set((b.findings.facts ?? []).flatMap((f) => f.identifiers ?? []))].slice(0, 12),
-        corroborated: (b.findings.corroborated ?? []).map((c) => c.pattern).slice(0, 6),
+        corroborated: (b.findings.corroborated ?? [])
+          .map((c) => ({ pattern: c.pattern, sourceIds: [...(c.sources ?? [])] }))
+          .slice(0, 6),
         unknowns: b.findings.unknowns ?? [],
         matches: matches.map((m) => ({
           refId: m.refId,
@@ -677,7 +727,8 @@ export async function generatePlanIfNeeded(
     }
     const payload = validateRecoveryPlan(raw, evidenceIds, matchIds, tiers);
     if (!payload) {
-      return { action: "failed", error: "judge returned unusable or unsafe proposal" };
+      const category = diagnoseRecoveryPlan(raw, evidenceIds, matchIds, tiers);
+      return { action: "failed", error: `judge returned unusable proposal (${category})` };
     }
     try {
       const { row } = await deps.store.createDraft({

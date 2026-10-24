@@ -194,6 +194,15 @@ export type BriefView = {
   contradictions: string[];
 };
 
+export type PlanSummaryView = {
+  version: number;
+  status: string;
+  riskLevel: string;
+  stepCount: number;
+  topSteps: string[];
+  fingerprint: string;
+};
+
 export type MatchView = {
   refId: string;
   tier: string;
@@ -222,7 +231,8 @@ export type InvestigateReads = {
   getIncident: (incidentId: string, workspaceId: string) => Promise<IncidentView | null>;
   getBrief: (incidentId: string, workspaceId: string) => Promise<BriefView | null>;
   getMatches: (incidentId: string, workspaceId: string) => Promise<{ current: boolean; fingerprint: string | null; rows: MatchView[] }>;
-  listDecisions: (workspaceId: string) => Promise<DecisionItem[]>;
+  /** Latest active recovery-plan draft, if any. Optional: callers degrade without it. */
+  getPlan?: (incidentId: string, workspaceId: string) => Promise<PlanSummaryView | null>;  listDecisions: (workspaceId: string) => Promise<DecisionItem[]>;
   recentRadarAlerts: (workspaceId: string, operatorUserId: string) => Promise<RadarAlertView[]>;
 };
 

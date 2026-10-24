@@ -523,6 +523,23 @@ describe("P7 incident selection (topic beats recency)", () => {
     expect(done.replyText).not.toContain("Visa");
   });
 
+  it("unmatched explicit topic never falls back to history", async () => {
+    const rt = baseRuntime({
+      text: "Plan for the warehouse outage",
+      history: prodHistory,
+      reads: readsBoth,
+      classify: async () => ({ kind: "plan_request", refHint: null, topic: null }),
+      phrase: async () => "phrased",
+      runPlan: async () => { throw new Error("must not generate"); },
+    });
+    const out = await runConversational(rt);
+    expect(out.kind).toBe("plan_request");
+    // Asks instead of guessing: lists options, links the list (not one record).
+    expect(out.replyText).toContain("Which incident should I draft for?");
+    expect(out.replyText).toContain("Visa checkout");
+    expect(out.replyText).toContain("Tracking page");
+  });
+
   it("tied topics ask for clarification instead of guessing", async () => {
     const rt = baseRuntime({
       text: "draft a plan for the checkout problem",

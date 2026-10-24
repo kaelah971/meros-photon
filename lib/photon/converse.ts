@@ -200,6 +200,29 @@ const TOPIC_STOP = new Set(
     .split(","),
 );
 
+/** Generic request/meta words: never an explicit issue reference on their
+ * own. "Make a plan for this" and "tell me more" may use validated
+ * history; "warehouse outage" may not fall back to it. */
+const TOPIC_GENERIC = new Set(
+  [...TOPIC_STOP].concat(
+    ("make,do,does,did,done,get,give,giving,take,see,sees,seen,know,tell,tells," +
+      "show,shows,explain,explains,recap,group,grouped,related,together,same," +
+      "happen,happens,happening,happened,going,comes,coming,say,says,said,talk," +
+      "talking,look,looking,check,checking,think,bring,date,more,most,such,very," +
+      "have,has,had,before,after,first,last,never,ever,again,still,already,yet," +
+      "today,recently,previously,earlier,ago,since,until,once,unknown,unknowns," +
+      "next,status,update,updates,details,detail,info,information,summary,overview," +
+      "many,much,often,long,anyone,anything,everything").split(","),
+  ),
+);
+
+export function hasTopicWords(text: string): boolean {
+  return text
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .some((t) => t.length >= 4 && !TOPIC_GENERIC.has(t));
+}
+
 export function matchTopicReference(
   text: string,
   live: LiveOption[],
@@ -551,6 +574,11 @@ export async function gatherContext(input: {
     }
   }
   if (!selected && !ambiguous && live.length > 0) {
+    // Explicit but unmatched topic words ("warehouse outage" with no such
+    // incident) must NEVER silently fall back to older history — that is
+    // how the wrong incident got drafted for. Ask instead; pure deixis
+    // ("make a plan for this") may still use validated context.
+    const topicUnmatched = hasTopicWords(text) && !selected && !ambiguous;
     const contextKinds: ReadonlySet<ConverseKind> = new Set([
       "why_related",
       "sofar",
@@ -559,7 +587,7 @@ export async function gatherContext(input: {
       "plan_request",
       "explain",
     ]);
-    if (contextKinds.has(plan.kind)) {
+    if (contextKinds.has(plan.kind) && !topicUnmatched) {
       selected = inferSelectedRef(history, liveCands, liveIncs);
     }
   }
